@@ -1,0 +1,33 @@
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Datasets, training runs, and model weights
+/data/
+/datasets/
+/checkpoints/
+/outputs/
+/runs/
+/wandb/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Editor and operating system files
+.ipynb_checkpoints/
+.DS_Store
+*~
