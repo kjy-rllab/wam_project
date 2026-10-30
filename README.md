@@ -24,9 +24,11 @@ WAM 프로젝트 작업 저장소입니다.
 cd dreamzero
 # 노드 1개
 ROBOCASA_DATA_ROOT='/path/to/robocasa/v1.0/pretrain/*/*/*/lerobot' bash scripts/train/robocasa_training_context_noise.sh
-# hangang 여러 노드 (기본 4노드, /scratch에서 제출)
+# hangang 여러 노드 (기본 16노드·25k 스텝, /scratch에서 제출)
 sbatch scripts/train/robocasa_training_context_noise.sbatch
 ```
 
+- hangang 작업은 24시간 제한이 있어서, 작업이 시작할 때 다음 작업을 하나 예약합니다 (최대 `CHAIN_JOBS=4`개). 다음 작업은 마지막 체크포인트에서 이어서 학습하고, 학습이 끝나면 남은 예약은 취소됩니다.
+- 한 번 시작한 학습은 노드 수를 바꾸지 않습니다 (ZeRO 옵티마이저 상태가 GPU 수대로 나뉘어 저장됨).
 - 비교용 기준 모델: `CONTEXT_NOISE=false`
 - 환경: DreamZero `pyproject.toml` 기준에 `pyarrow<20`, `pandas<3`, `matplotlib`이 더 필요합니다 (numpy 1.26). aarch64(GH200)에는 torch 2.8.0 cu128 휠이 없어 torch 2.9.0을 씁니다.
