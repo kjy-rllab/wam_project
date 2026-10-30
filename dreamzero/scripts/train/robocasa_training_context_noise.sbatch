@@ -13,7 +13,7 @@
 #
 # KISTI hangang (GH200, natStr) multi-node launch of robocasa_training_context_noise.sh.
 # Submit from the dreamzero folder on /scratch (jobs can only be submitted from /scratch or /appsdata):
-#   sbatch scripts/train/robocasa_training_context_noise.sbatch [hydra overrides]
+#   $ sbatch scripts/train/robocasa_training_context_noise.sbatch [hydra overrides]
 # Resubmitting resumes from the latest checkpoint in OUTPUT_DIR (24h job limit).
 
 WORK=${WORK:-/scratch/t526a02/jooyoung}

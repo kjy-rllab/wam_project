@@ -54,6 +54,7 @@ python -m torch.distributed.run \
     num_state_per_block=1 \
     seed=42 \
     training_args.learning_rate=1e-5 \
+    optim=adamw_torch_fused \
     training_args.deepspeed="groot/vla/configs/deepspeed/${DEEPSPEED_CFG}.json" \
     save_steps=1000 \
     training_args.warmup_ratio=0.05 \
