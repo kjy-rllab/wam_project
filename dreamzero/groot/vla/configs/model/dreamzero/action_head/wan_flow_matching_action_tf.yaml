@@ -104,5 +104,8 @@ action_head_cfg:
     video_noise_beta_alpha: 3.0
     video_noise_beta_beta: 1.0
 
+    # Noised context (tmrl): one noise level per sample on the clean video context (see WANPolicyHead.forward)
+    context_noise: false
+
     tune_projector: true
     tune_diffusion_model: true

@@ -114,6 +114,10 @@ class WANPolicyHeadConfig(PretrainedConfig):
     video_noise_beta_beta: float = field(
         default=1.0, metadata={"help": "Beta beta for video noise. Keep at 1.0."}
     )
+    # Noised context (tmrl): clean video context gets one noise level per sample, given to the DiT through aug_t
+    context_noise: bool = field(
+        default=False, metadata={"help": "Noise the clean video context (latents, first-frame y and CLIP feature) with one level per sample."}
+    )
     # Decoupled inference config - allows video to stay noisy while action fully denoises
     decouple_inference_noise: bool = field(
         default=False, metadata={"help": "Use decoupled noise schedules during inference (video stays noisy, action fully denoises)."}
@@ -757,6 +761,20 @@ class WANPolicyHead(ActionHead):
             noisy_actions = None
             training_target_action = None
 
+        # Noised context (tmrl): context latents, first-frame latent in y and CLIP feature share one level per sample.
+        # tcont_context=0 is the clean context (aug_t=0) of the original model.
+        if self.config.context_noise:
+            tcont_context = torch.rand(latents.shape[0], device=self._device)
+            sigma_context = self.scheduler.shift * tcont_context / (1 + (self.scheduler.shift - 1) * tcont_context)
+            s = sigma_context.view(-1, 1, 1, 1, 1)
+            context_latents = ((1 - s) * latents + s * torch.randn_like(latents)).to(latents.dtype)
+            ys[:, 4:, :1] = context_latents[:, :1].transpose(1, 2)
+            clip_feas = clip_feas * torch.rsqrt(clip_feas.pow(2).mean(-1, keepdim=True) + 1e-6)
+            clip_feas = (1 - s[:, 0, 0]) * clip_feas + s[:, 0, 0] * torch.randn_like(clip_feas)
+            aug_t = (sigma_context * self.scheduler.num_train_timesteps)[:, None].expand(-1, seq_len)
+        else:
+            context_latents, aug_t = latents, None
+
         # Compute loss
         with torch.amp.autocast(dtype=torch.bfloat16, device_type=torch.device(self._device).type):
             if actions.numel() > 0:
@@ -764,14 +782,14 @@ class WANPolicyHead(ActionHead):
                     noisy_latents.transpose(1, 2), timestep=timestep, clip_feature=clip_feas, y=ys, context=prompt_embs, seq_len=seq_len,
                     state=state_features, embodiment_id=embodiment_id,
                     action=noisy_actions, timestep_action=timestep_action, 
-                    clean_x=latents.transpose(1, 2),
+                    clean_x=context_latents.transpose(1, 2), aug_t=aug_t,
                 )
             else:
                 video_noise_pred, action_noise_pred = self.model(
                     noisy_latents.transpose(1, 2), timestep=timestep, timestep_action=timestep_action, 
                     clip_feature=clip_feas, y=ys, context=prompt_embs, seq_len=seq_len,
                     state=state_features, embodiment_id=embodiment_id,
-                    clean_x=latents.transpose(1, 2),
+                    clean_x=context_latents.transpose(1, 2), aug_t=aug_t,
                 )
 
             # Per-sample dynamics loss
