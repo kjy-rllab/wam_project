@@ -102,7 +102,11 @@ def main(args: Args):
                 tcont = options.get("tcont_context", args.tcont_context)
                 dist.broadcast_object_list([(obs, tcont)], src=0, group=group)
                 result, _ = policy.lazy_joint_forward_causal(Batch(obs=obs), tcont_context=tcont)
-                response = [{k: np.asarray(v, dtype=np.float32).reshape(horizon, -1) for k, v in result.act.items()}, {}]
+                actions = {k: np.asarray(v, dtype=np.float32).reshape(horizon, -1) for k, v in result.act.items()}
+                # The data stores these as -1/1; the client takes the Gym convention (0/1, closed at >= 0.5)
+                for k in ("action.gripper_close", "action.control_mode"):
+                    actions[k] = (actions[k] + 1) / 2
+                response = [actions, {}]
             else:
                 raise ValueError(f"unknown endpoint {endpoint!r}")
         except Exception as e:
