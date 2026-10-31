@@ -676,7 +676,7 @@ class GrootSimPolicy(BaseGrootSimPolicy):
             batch.act = squeeze_dict_values(batch.act)
         return batch, video_pred
 
-    def lazy_joint_forward_causal(self, batch, video=None, latent_video=None, state=None, video_only=False, **kwargs):
+    def lazy_joint_forward_causal(self, batch, video=None, latent_video=None, state=None, video_only=False, tcont_context=None, **kwargs):
         
         transform_start_time = time.perf_counter()
 
@@ -715,7 +715,7 @@ class GrootSimPolicy(BaseGrootSimPolicy):
         # 3. Model inference
         with torch.inference_mode():
             # with maybe_autocast:
-            model_pred = self.trained_model.lazy_joint_video_action_causal(normalized_input, latent_video=latent_video)
+            model_pred = self.trained_model.lazy_joint_video_action_causal(normalized_input, latent_video=latent_video, tcont_context=tcont_context)
         normalized_action = model_pred["action_pred"].float()
         video_pred = model_pred["video_pred"]
 

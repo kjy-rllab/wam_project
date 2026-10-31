@@ -988,7 +988,7 @@ class WANPolicyHead(ActionHead):
 
         return True
 
-    def lazy_joint_video_action(self, backbone_output: BatchFeature, action_input: BatchFeature, latent_video: torch.Tensor | None = None) -> BatchFeature:
+    def lazy_joint_video_action(self, backbone_output: BatchFeature, action_input: BatchFeature, latent_video: torch.Tensor | None = None, tcont_context: float | torch.Tensor | None = None) -> BatchFeature:
         start_time = time.perf_counter()
 
         # Tracking time taken on GPU for various operations.
@@ -1144,6 +1144,24 @@ class WANPolicyHead(ActionHead):
                 dtype=noise_obs.dtype,
                 device=noise_obs.device,
             )
+            self.context_generator = torch.Generator(noise_obs.device).manual_seed(self.seed + 1)  # not the initial-noise seed
+
+        # Noised context (tmrl): observed latents written to the KV cache get level tcont_context in [0, 1] (float or [B])
+        # as in training, given to the DiT as their timestep. The first-frame y and CLIP feature get the level of the call
+        # that starts the KV cache. The seeded generator gives CFG-parallel ranks the same context noise.
+        context, context_timestep = image, torch.zeros([batch_size, 1], device=noise_obs.device, dtype=torch.int64)
+        if tcont_context is not None:
+            tcont = torch.as_tensor(tcont_context, dtype=torch.float32, device=noise_obs.device).expand(batch_size)
+            sigma = self.scheduler.shift * tcont / (1 + (self.scheduler.shift - 1) * tcont)
+            s = sigma.view(-1, 1, 1, 1, 1)
+            noise = torch.randn(image.shape, generator=self.context_generator, device=noise_obs.device, dtype=image.dtype)
+            context = ((1 - s) * image + s * noise).to(image.dtype)
+            if self.current_start_frame == 0:
+                self.ys[:, 4:, :1] = context[:, :1].transpose(1, 2)
+                clip = self.clip_feas * torch.rsqrt(self.clip_feas.pow(2).mean(-1, keepdim=True) + 1e-6)
+                noise = torch.randn(clip.shape, generator=self.context_generator, device=noise_obs.device, dtype=clip.dtype)
+                self.clip_feas = ((1 - s[:, 0, 0]) * clip + s[:, 0, 0] * noise).to(clip.dtype)
+            context_timestep = sigma[:, None] * self.scheduler.num_train_timesteps
 
         assert self.kv_cache1 is not None
         assert self.kv_cache_neg is not None
@@ -1159,10 +1177,9 @@ class WANPolicyHead(ActionHead):
         start_kv_event.record()
 
         if self.current_start_frame == 0:
-            timestep = torch.ones([batch_size, 1], device=noise_obs.device, dtype=torch.int64) * 0
             self._run_diffusion_steps(
-                noisy_input=image.transpose(1, 2),
-                timestep=timestep * 0,
+                noisy_input=context.transpose(1, 2),
+                timestep=context_timestep,
                 action=None,
                 timestep_action=None,
                 state=None,
@@ -1179,18 +1196,16 @@ class WANPolicyHead(ActionHead):
                 ),
             )
             self.current_start_frame += 1
-            
-        timestep = torch.ones([batch_size, self.num_frame_per_block], device=noise_obs.device, dtype=torch.int64) * 0
 
         if self.current_start_frame != 1:
-            current_ref_latents = image[:, -self.num_frame_per_block:]
+            current_ref_latents = context[:, -self.num_frame_per_block:]
             if self.current_start_frame <= self.ys.shape[2]:
                 y = self.ys[:, :, self.current_start_frame - self.num_frame_per_block : self.current_start_frame]
             else:
                 y = self.ys[:, :, -self.num_frame_per_block:]
             self._run_diffusion_steps(
                 noisy_input=current_ref_latents.transpose(1, 2),
-                timestep=timestep * 0,
+                timestep=context_timestep.expand(-1, self.num_frame_per_block),
                 action=None,
                 timestep_action=None,
                 state=None,
