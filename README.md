@@ -44,3 +44,22 @@ result_batch, video_pred = policy.lazy_joint_forward_causal(batch, tcont_context
 - 첫 프레임 `y`와 CLIP 특징은 KV cache를 새로 시작하는 호출의 수준으로 한 번 노이즈합니다. 학습처럼 에피소드마다 수준 하나를 쓰는 게 기본이고, 호출마다 바꾸면 새로 들어오는 관측 프레임에만 적용됩니다.
 - 노이즈는 KV cache를 시작할 때 seed를 고정한 generator에서 뽑습니다. 그래서 같은 입력이면 결과가 같고, GPU 2개로 CFG를 나눠 돌릴 때도 두 GPU가 같은 노이즈를 씁니다.
 - 코드: `WANPolicyHead.lazy_joint_video_action`. DROID용 서버(`socket_test_optimized_AR.py` 등)는 아직 이 값을 받지 않습니다.
+
+## RoboCasa 시뮬레이션에서 추론
+
+`dreamzero/eval_utils/serve_robocasa.py`가 RoboCasa 클라이언트(`robocasa_workspace/server_inference`)의 ZeroMQ(RLDX) 규약으로 DreamZero를 서빙합니다. 클라이언트는 고치지 않고 `tcp://` 주소로 연결합니다.
+
+```bash
+# GPU 서버 (dreamzero 폴더, pyzmq 필요)
+torchrun --nproc_per_node=1 eval_utils/serve_robocasa.py --model-path /path/to/checkpoint-7000 --port 5555
+# 로컬 (robocasa_workspace, robocasa 환경)
+python -m server_inference.run_robocasa --server tcp://127.0.0.1:5555 \
+  --task CoffeeSetupMug --split pretrain --replan-steps 24 --max-steps 600
+```
+
+- 학습처럼 행동 24 step 한 chunk가 그 구간의 프레임 8개(3 step 간격)와 짝입니다. 그래서 클라이언트는 chunk를 끝까지 실행해야 합니다 (`--replan-steps 24`).
+- 매 호출에서 서버는 방금 실행한 chunk의 프레임 8개와 그 앞 프레임 1개를 받습니다 (`video.delta_indices = -24, -21, …, 0`). 에피소드 첫 호출은 현재 프레임 하나로 KV cache를 새로 시작합니다.
+- KV cache는 첫 프레임 + chunk 4개(96 step)까지 쌓고, 다음 호출에서 현재 프레임으로 다시 시작합니다 (DreamZero 원래 동작).
+- `--tcont-context 0.3`처럼 context 노이즈 수준을 줍니다. 요청의 `options["tcont_context"]`가 있으면 그 호출에는 그 값을 씁니다.
+- `--nproc_per_node=2`면 CFG의 두 branch를 GPU 2개에 나눠 돌립니다.
+- 서버 하나는 클라이언트 세션 하나만 받습니다. 다른 세션이 에피소드를 시작하면 이전 세션의 다음 요청은 오류로 끝납니다.
