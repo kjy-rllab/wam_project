@@ -68,5 +68,44 @@ python -m server_inference.run_robocasa --server tcp://127.0.0.1:5555 \
 - `--nproc_per_node=2`면 CFG의 두 branch를 GPU 2개에 나눠 돌립니다.
 - 서버 하나는 클라이언트 세션 하나만 받습니다. 다른 세션이 에피소드를 시작하면 이전 세션의 다음 요청은 오류로 끝납니다.
 - 학습 환경에 더해 `pyzmq`, `tianshou==0.5.1`, `gymnasium`이 필요합니다 (`sim_policy.py`).
-- hangang: `sbatch scripts/inference/robocasa_serve.sbatch <checkpoint> [--tcont-context 0.3]`로 GPU 2개, 4시간 작업을 띄웁니다. 노드를 다른 작업과 나눠 쓰므로 포트는 작업마다 다릅니다. 로컬에서는 `ssh -N -L 5555:<node>:<port> hangang.ksc.re.kr`로 연결합니다 (`<node>`: `squeue`의 노드 이름, `<port>`: 작업 로그의 `Serving ... on port` 줄). 학습 중인 checkout을 건드리지 않으려면 다른 checkout에서 제출합니다. 스크립트가 `PYTHONPATH`를 제출한 checkout으로 잡습니다.
+- hangang: `sbatch scripts/inference/robocasa_serve.sbatch <checkpoint> [--tcont-context 0.3]`로 GPU 2개, 4시간 작업을 띄웁니다. 노드를 다른 작업과 나눠 쓰므로 포트는 작업마다 다르고, 로컬에서 돌릴 터널 명령이 작업 로그의 `Local tunnel:` 줄에 찍힙니다. 학습 중인 checkout을 건드리지 않으려면 다른 checkout에서 제출합니다. 스크립트가 `PYTHONPATH`를 제출한 checkout으로 잡습니다.
 - 속도 (hangang GH200 2개): 첫 호출은 compile 때문에 2분쯤 걸리고, 이후에는 호출당 왕복 약 2.2초입니다.
+
+## 검증: context 노이즈 수준별 비교
+
+체크포인트 하나를 context 노이즈 수준(`tcont`)마다 평가합니다. 모든 수준이 같은 샘플과 같은 노이즈, 같은 에피소드를 씁니다. 아래에서 task는 RoboCasa 작업(예: CloseMicrowave)입니다.
+
+### 데이터 loss
+
+```bash
+# hangang, 학습 중이 아닌 checkout의 dreamzero 폴더 (GPU 4개)
+sbatch scripts/inference/robocasa_val_loss.sbatch <checkpoint> --resume-steps 0 9000 18000
+```
+
+- `eval_utils/robocasa_val_loss.py`는 run 설정으로 학습 때의 shard 순서를 다시 만들어 샘플을 세 묶음으로 고르고, 각 샘플의 dynamics loss와 action loss를 수준마다 잽니다.
+  - trained: 학습한 샘플. 학습 작업마다 data worker가 처음 방문한 shard는 shuffle까지 다시 만들 수 있어서, 그 shard에서 실제로 학습한 샘플만 씁니다.
+  - heldout: 학습한 task에서 어느 worker도 방문하지 않은 shard
+  - unseen: shard를 하나도 방문하지 않은 task
+- `--resume-steps`: run의 작업들이 시작한 global step. 이어서 학습할 때마다 데이터 seed가 `42 + 시작 step`으로 바뀌므로 필요합니다.
+- 기본값: 묶음마다 task 40개 (trained와 heldout은 같은 task, atomic과 composite 반씩), task마다 샘플 4개, 수준 `0, 1/32, 1/16, 1/8, 1/4, 1/2, 1`. batch가 bf16으로 바뀌므로 수준은 2의 거듭제곱으로 둡니다.
+- 결과: `<run>/val_loss/<checkpoint>/summary.json` (묶음·수준별 평균과 표준오차), `records.jsonl` (샘플별). 로그 끝에 두 loss의 표가 찍힙니다.
+- 데이터셋 순서가 파일 시스템의 glob 순서라 학습한 클러스터에서 돌립니다.
+- rank들이 모델을 하나씩 차례로 불러옵니다. 불러오는 동안 rank 하나가 CPU 메모리를 약 120GB 쓰는데, 4개가 한꺼번에 불러오니 CPU 메모리(약 480GB)가 차서 GPU 메모리로 넘쳤고, 그 GPU가 메모리 부족으로 멈췄습니다.
+- 시간 (GH200 4개): 준비에 약 13분 (모델을 차례로 불러오는 데 10분), 그 뒤 GPU마다 shard 하나(샘플 1개 × 수준 3개)에 약 20초. checkpoint-21000으로 shard 12개를 시험하는 데 15분 걸렸고, 기본값(shard 약 100개)이면 1시간쯤으로 예상합니다.
+- checkpoint-21000에서 다시 만든 shard 순서가 학습 로그의 shard 대기 기록(작업 3개, 1,792개)과 모두 맞았습니다.
+
+### 시뮬레이션 성공률
+
+```bash
+# hangang: 수준마다 서버 하나 (GPU 4개 = 수준 2개 × CFG용 GPU 2개)
+SERVE_LEVELS="0 0.125" sbatch --gres=gpu:4 --time=08:00:00 scripts/inference/robocasa_serve.sbatch <checkpoint>
+# 로컬: 작업 로그의 `Local tunnel:` 명령으로 연결한 뒤, dreamzero 폴더에서 robocasa 환경으로 (작업 로그의 `Local eval:` 줄)
+python eval_utils/robocasa_sim_eval.py --servers 0=tcp://127.0.0.1:5555 0.125=tcp://127.0.0.1:5556 --output-dir <dir>
+```
+
+- task: 학습에서 가장 많이 뽑힌 atomic task 8개(seen)와, 뽑힌 적은 없지만 반대 task는 학습한 atomic task 8개(unseen, 예: CloseMicrowave ↔ OpenMicrowave). `--seen`, `--unseen`으로 바꿉니다.
+- 에피소드 e는 seed e로 장면을 만들어서 모든 수준이 같은 장면을 씁니다. 기본 10 에피소드, `--split pretrain`, 최대 step은 RoboCasa dataset registry의 task horizon(300~750)입니다.
+- 서버는 앞 서버가 포트를 연 다음에 하나씩 시작합니다 (모델을 한꺼번에 불러오지 않도록). 서버가 모두 뜨면 `Local tunnel:` 줄이 찍힙니다.
+- 수준끼리는 동시에 돌고, 한 수준 안에서는 에피소드를 하나씩 돌립니다 (서버 하나는 세션 하나만 받음). 끝난 에피소드는 건너뛰므로 같은 명령을 다시 돌리면 이어서 합니다.
+- 결과: task×수준별 성공/에피소드 표, seen·unseen 성공률과 한 번이라도 성공한 task 수, `results.json`. 에피소드마다 `client.log`와 `summary.json`이 남습니다.
+- 속도: 서버마다 처음 두 호출은 compile 때문에 약 2분 15초와 30초가 걸리고, 그 뒤로는 서버 2개가 동시에 돌아도 호출당 약 2.2초입니다. 기본 설정(task 16개 × 10 에피소드, 평균 horizon 525 step)이면 수준들이 동시에 돌아서 전체 3시간쯤으로 예상합니다. 다 돌면 서버 작업은 `scancel`로 끝냅니다.
