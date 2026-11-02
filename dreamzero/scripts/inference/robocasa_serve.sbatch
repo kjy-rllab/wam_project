@@ -33,6 +33,9 @@ for i in "${!levels[@]}"; do
     [ "${levels[i]}" != none ] && level=(--tcont-context "${levels[i]}")
     CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${gpus[*]:i*n:n}") torchrun --standalone --nproc_per_node=$n \
         eval_utils/serve_robocasa.py --model-path "$1" --port $((port + i)) "${level[@]}" "${@:2}" &
+    # The next server starts once this one listens: a loading rank holds about 120 GB of CPU memory, and on GH200 the
+    # CPU memory spills into GPU memory once full
+    while kill -0 $! 2>/dev/null && ! (exec 3<>/dev/tcp/127.0.0.1/$((port + i))) 2>/dev/null; do sleep 10; done
     tunnel+=" -L $((5555 + i)):$SLURMD_NODENAME:$((port + i))"
     servers+=" ${levels[i]}=tcp://127.0.0.1:$((5555 + i))"
 done

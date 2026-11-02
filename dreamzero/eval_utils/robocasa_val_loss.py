@@ -86,14 +86,18 @@ def main(args: Args):
         print(f"Checkpoint step {global_step}: {len(seen)} tasks sampled, {len(task) - len(seen)} never; "
               f"evaluating {len(units)} shards x {args.samples_per_task} samples x {len(args.levels)} levels", flush=True)
 
-    # As GrootSimPolicy loads it
-    model = VLA.from_pretrained(args.model_path)
-    model.eval()
-    model.requires_grad_(False)
-    if cfg.get("eval_bf16", False):
-        model = model.to(dtype=torch.bfloat16)
-    model.to("cuda")
-    model.post_initialize()
+    # As GrootSimPolicy loads it, one rank at a time: a loading rank holds about 120 GB of CPU memory, and on GH200 the
+    # CPU memory spills into GPU memory once full (four ranks at once ran a GPU out of memory)
+    for r in range(world):
+        if r == rank:
+            model = VLA.from_pretrained(args.model_path)
+            model.eval()
+            model.requires_grad_(False)
+            if cfg.get("eval_bf16", False):
+                model = model.to(dtype=torch.bfloat16)
+            model.to("cuda")
+            model.post_initialize()
+        dist.barrier()
     collator = instantiate(cfg.data_collator)
     shift = model.action_head.scheduler.shift
 
