@@ -37,11 +37,22 @@ export CHAIN_JOBS=${CHAIN_JOBS:-4}
 if [ "$CHAIN_JOBS" -gt 1 ] && [ ! -f "$OUTPUT_DIR/config.json" ]; then
     NEXT_JOB=$(CHAIN_JOBS=$((CHAIN_JOBS - 1)) sbatch --parsable --nodes="$SLURM_NNODES" --dependency=afterany:"$SLURM_JOB_ID" \
         scripts/train/robocasa_training_context_noise.sbatch "$@")
-    echo "Queued next job: $NEXT_JOB"
+    # natStr allows 5 jobs per user, waiting ones included
+    echo "Queued next job: ${NEXT_JOB:-none, the chain ends with this job (sbatch error above)}"
 fi
 
-srun --kill-on-bad-exit=1 bash -c 'NODE_RANK=$SLURM_NODEID bash scripts/train/robocasa_training_context_noise.sh "$@"' _ "$@"
-status=$?
+# Moving the model to the GPUs can run out of GPU memory (two chain jobs did, with ~54 GiB of it taken by host memory:
+# GH200 puts host memory on GPU memory when CPU memory is full). Restart on the same nodes when training stops within
+# 15 minutes, at most 3 tries; a new master port each try
+for try in 1 2 3; do
+    start=$SECONDS
+    MASTER_PORT=$((29500 + try)) srun --kill-on-bad-exit=1 \
+        bash -c 'NODE_RANK=$SLURM_NODEID bash scripts/train/robocasa_training_context_noise.sh "$@"' _ "$@"
+    status=$?
+    if [ $status -eq 0 ] || [ $((SECONDS - start)) -ge 900 ]; then break; fi
+    echo "Training stopped $((SECONDS - start)) s after start (status $status), try $try of 3"
+    sleep 30
+done
 
 # Training finished (final model saved in OUTPUT_DIR): the queued job is not needed
 if [ -f "$OUTPUT_DIR/config.json" ] && [ -n "$NEXT_JOB" ]; then scancel "$NEXT_JOB"; fi

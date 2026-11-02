@@ -29,6 +29,8 @@ sbatch scripts/train/robocasa_training_context_noise.sbatch
 ```
 
 - hangang 작업은 24시간 제한이 있어서, 작업이 시작할 때 다음 작업을 하나 예약합니다 (최대 `CHAIN_JOBS=4`개). 다음 작업은 마지막 체크포인트에서 이어서 학습하고, 학습이 끝나면 남은 예약은 취소됩니다.
+- natStr는 사용자당 작업 5개까지이고, 예약돼 기다리는 작업도 셉니다. 연구실이 계정 하나를 같이 쓰므로, 학습 중에는 5개 중 2개(실행 1개, 예약 1개)를 씁니다. 자리가 없어 예약이 안 되면 로그에 `Queued next job: none`이 남고, 그 작업으로 학습이 멈춥니다.
+- 학습이 시작 후 15분 안에 멈추면 같은 노드에서 다시 시작합니다 (최대 3번). 모델을 GPU로 옮기다 GPU 메모리 부족으로 실패한 작업이 2개 있었습니다. GH200은 CPU 메모리가 차면 GPU 메모리를 CPU 메모리로 쓰는데, 그때 약 54GB가 그렇게 쓰이고 있었습니다.
 - 한 번 시작한 학습은 노드 수를 바꾸지 않습니다 (ZeRO 옵티마이저 상태가 GPU 수대로 나뉘어 저장됨).
 - 비교용 기준 모델: `CONTEXT_NOISE=false`
 - 환경: DreamZero `pyproject.toml` 기준에 `pyarrow<20`, `pandas<3`, `matplotlib`이 더 필요합니다 (numpy 1.26). aarch64(GH200)에는 torch 2.8.0 cu128 휠이 없어 torch 2.9.0을 씁니다.
