@@ -762,9 +762,13 @@ class WANPolicyHead(ActionHead):
             training_target_action = None
 
         # Noised context (tmrl): context latents, first-frame latent in y and CLIP feature share one level per sample.
-        # tcont_context=0 is the clean context (aug_t=0) of the original model.
+        # tcont_context=0 is the clean context (aug_t=0) of the original model. A batch can fix the levels
+        # (eval_utils/robocasa_val_loss.py); training samples them.
         if self.config.context_noise:
-            tcont_context = torch.rand(latents.shape[0], device=self._device)
+            tcont_context = data.get("tcont_context")
+            if tcont_context is None:
+                tcont_context = torch.rand(latents.shape[0], device=self._device)
+            tcont_context = tcont_context.float()
             sigma_context = self.scheduler.shift * tcont_context / (1 + (self.scheduler.shift - 1) * tcont_context)
             s = sigma_context.view(-1, 1, 1, 1, 1)
             context_latents = ((1 - s) * latents + s * torch.randn_like(latents)).to(latents.dtype)
