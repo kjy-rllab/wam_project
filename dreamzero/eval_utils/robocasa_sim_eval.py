@@ -8,7 +8,7 @@ command again resumes.
 
 With --predicted-videos N, episode 0 of the first N tasks also saves the video the model predicted while playing it
 (the server's get_video): predicted.mp4 (left, right and wrist camera), and compare.mp4 with the simulator frames of the
-same steps above it.
+same steps above it, cropped and resized as the model sees them.
 
 Run in the robocasa environment, with the servers tunneled to local ports (the serve job log prints the command):
     python eval_utils/robocasa_sim_eval.py --servers 0=tcp://127.0.0.1:5555 0.125=tcp://127.0.0.1:5556 \
@@ -16,6 +16,7 @@ Run in the robocasa environment, with the servers tunneled to local ports (the s
 """
 import argparse
 import io
+import itertools
 import json
 import queue
 import subprocess
@@ -105,9 +106,15 @@ def main():
                     grid = np.load(io.BytesIO(response["as_npy"]))
                     h, w = grid.shape[1] // 2, grid.shape[2] // 2
                     frames = np.concatenate([grid[:, :h, :w], grid[:, h:, :w], grid[:, :h, w:]], axis=2)
+                    sim = []
                     with imageio.get_reader(out / "episode_000.mp4") as reader:
-                        sim = np.stack([np.asarray(Image.fromarray(f).resize((3 * w, h)))
-                                        for i, f in enumerate(reader) if i % 3 == 0])
+                        for f in itertools.islice(reader, 0, None, 3):
+                            # Each camera as the model sees it: center crop of scale 0.95 (VideoCrop in eval), resized
+                            s = f.shape[0]
+                            c, o = int(0.95 * s), (s - int(0.95 * s)) // 2
+                            sim.append(np.concatenate([np.asarray(Image.fromarray(v[o:o + c, o:o + c]).resize((w, h)))
+                                                       for v in np.split(f, 3, axis=1)], axis=1))
+                    sim = np.stack(sim)
                     n = min(len(sim), len(frames))  # the last chunk can run past the end of the episode
                     imageio.mimwrite(out / "predicted.mp4", frames, fps=20 / 3, macro_block_size=1)
                     imageio.mimwrite(out / "compare.mp4", np.concatenate([sim[:n], frames[:n]], axis=1), fps=20 / 3,
