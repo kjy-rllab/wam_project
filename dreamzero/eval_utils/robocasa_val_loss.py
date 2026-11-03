@@ -33,6 +33,9 @@ from groot.vla.model.dreamzero.transform.dreamzero_cotrain import DreamTransform
 class Args:
     model_path: str  # training checkpoint, e.g. runs/dreamzero_robocasa_context_noise/checkpoint-25000
     resume_steps: list[int]  # global steps the run's jobs started from, e.g. 0 9000 18000
+    # Checkpoint whose run gives the shard sets (default: model_path), e.g. the checkpoint a run started from with
+    # pretrained_model_path, whose run visited the shards of the new one; --resume-steps are then that run's
+    shards_from: str | None = None
     train_gpus: int = 64  # data parallel ranks of the run (16 nodes x 4 GPUs)
     # Context noise levels. Powers of 2 stay exact through the bf16 cast of the batch.
     levels: list[float] = dataclasses.field(default_factory=lambda: [0.0, 1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1.0])
@@ -87,7 +90,10 @@ def main(args: Args):
     output_dir = Path(args.output_dir or model_dir.parent / "val_loss" / model_dir.name)
     cfg = OmegaConf.load(model_dir / "experiment_cfg" / "conf.yaml")
     global_step = json.loads((model_dir / "trainer_state.json").read_text())["global_step"]
-    mixture, task, seen, units = shard_sets(cfg, global_step, args.resume_steps, args.train_gpus, args.tasks, args.seed)
+    shards_dir = Path(args.shards_from or args.model_path)
+    mixture, task, seen, units = shard_sets(OmegaConf.load(shards_dir / "experiment_cfg" / "conf.yaml"),
+                                            json.loads((shards_dir / "trainer_state.json").read_text())["global_step"],
+                                            args.resume_steps, args.train_gpus, args.tasks, args.seed)
     if rank == 0:
         print(f"Checkpoint step {global_step}: {len(seen)} tasks sampled, {len(task) - len(seen)} never; "
               f"evaluating {len(units)} shards x {args.samples_per_task} samples x {len(args.levels)} levels", flush=True)

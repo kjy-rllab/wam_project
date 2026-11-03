@@ -16,11 +16,15 @@
 #   $ sbatch scripts/train/robocasa_training_context_noise.sbatch [hydra overrides]
 # 24h job limit: each job queues the next one, which resumes from the latest checkpoint in OUTPUT_DIR.
 # Keep the node count fixed for a run (ZeRO optimizer shards are saved per GPU).
+# A new run from the weights of another run's checkpoint (new optimizer and LR schedule), e.g. 5k steps in one job:
+#   $ OUTPUT_DIR=<new run dir> MAX_STEPS=5000 CHAIN_JOBS=1 sbatch scripts/train/robocasa_training_context_noise.sbatch \
+#       pretrained_model_path=<checkpoint dir>
 
 WORK=${WORK:-/scratch/t526a02/jooyoung}
 module load miniconda3/py314_26.7.1-1 aws-ofi-nccl  # aws-ofi-nccl: NCCL over Slingshot
 source "$CONDA_DIR/etc/profile.d/conda.sh"
 conda activate "${DREAMZERO_ENV:-$WORK/envs/dreamzero}"
+export PYTHONPATH=$PWD  # this checkout's groot (the env's editable install may point to another checkout)
 
 export ROBOCASA_DATA_ROOT=${ROBOCASA_DATA_ROOT:-"$WORK/datasets/robocasa/v1.0/pretrain/*/*/*/lerobot"}
 export WAN21_CKPT_DIR=${WAN21_CKPT_DIR:-$WORK/checkpoints/Wan2.1-I2V-14B-480P}

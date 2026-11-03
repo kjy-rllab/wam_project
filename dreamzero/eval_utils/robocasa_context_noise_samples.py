@@ -52,6 +52,9 @@ from groot.vla.model.n1_5.sim_policy import GrootSimPolicy, unsqueeze_dict_value
 class Args:
     model_path: str  # training checkpoint, e.g. runs/dreamzero_robocasa_context_noise/checkpoint-25000
     resume_steps: list[int]  # global steps the run's jobs started from, e.g. 0 9000 18000
+    # Checkpoint whose run gives the heldout set (default: model_path), e.g. the checkpoint a run started from with
+    # pretrained_model_path, whose run visited the shards of the new one; --resume-steps are then that run's
+    shards_from: str | None = None
     train_gpus: int = 64  # data parallel ranks of the run
     # Context noise levels; sigma = 5t / (1 + 4t), so 1/8 is SNR 2 and 1/4 is SNR 0.36
     levels: list[float] = dataclasses.field(
@@ -75,8 +78,9 @@ def main(args: Args):
     model_dir = Path(args.model_path)
     output_dir = Path(args.output_dir or model_dir.parent / "context_noise_samples" /
                       (model_dir.name + ("" if args.y_tail == "own" else f"_y_tail_{args.y_tail}")))
-    cfg = OmegaConf.load(model_dir / "experiment_cfg" / "conf.yaml")
-    global_step = json.loads((model_dir / "trainer_state.json").read_text())["global_step"]
+    shards_dir = Path(args.shards_from or args.model_path)
+    cfg = OmegaConf.load(shards_dir / "experiment_cfg" / "conf.yaml")
+    global_step = json.loads((shards_dir / "trainer_state.json").read_text())["global_step"]
     mixture, task, _, units = shard_sets(cfg, global_step, args.resume_steps, args.train_gpus, args.tasks, args.seed)
 
     # Contexts: (dataset, trajectory, step, instruction). The training dataset class resamples the steps it is given

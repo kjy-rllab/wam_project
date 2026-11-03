@@ -8,11 +8,11 @@ WAM 프로젝트 작업 저장소입니다.
 
 [tmrl](https://github.com/matthewh6/tmrl)처럼 context에 노이즈를 준 채로 WAM을 학습합니다 (`action_head_cfg.config.context_noise=true`).
 
-- 노이즈 대상: teacher forcing의 깨끗한 영상 latent 흐름, `y`의 첫 프레임 latent, 첫 프레임 CLIP 특징. 언어와 로봇 상태는 깨끗하게 둡니다.
+- 노이즈 대상: teacher forcing의 깨끗한 영상 latent 흐름, `y`의 첫 프레임 latent(`context_noise_y_tail=true`면 `y`의 latent 전체), 첫 프레임 CLIP 특징. 언어와 로봇 상태는 깨끗하게 둡니다.
 - 샘플마다 수준 하나: `tcont ~ U[0,1)`, `σ = 5·tcont / (1 + 4·tcont)` (모델 스케줄의 shift 5), `x̃ = (1-σ)·x + σ·ε`. CLIP 특징은 RMS 정규화 후 같은 σ로 섞습니다.
 - 모델에는 깨끗한 토큰의 timestep으로 수준을 알려 줍니다 (`aug_t = 1000·σ`). `tcont=0`이면 원래 모델과 같습니다.
 - 코드: `dreamzero/groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py` (`WANPolicyHead.forward`)
-- 알려진 문제: `y`는 `[첫 프레임, 0 프레임들]`의 VAE latent인데 노이즈는 첫 latent에만 줍니다. causal VAE 인코더가 뒤 latent(특히 1, 2번째)에 첫 프레임 정보를 담고, 모델은 그 latent에서 장면을 읽습니다. 그래서 `tcont=1`에서도 장면이 그대로 남습니다 (아래 "예측 분포").
+- `y`의 뒤 latent: `y`는 `[첫 프레임, 0 프레임들]`의 VAE latent입니다. causal VAE 인코더가 뒤 latent(특히 1, 2번째)에 첫 프레임 정보를 담습니다. 노이즈를 첫 latent에만 주고 학습한 `dreamzero_robocasa_context_noise`는 그 latent에서 장면을 읽어서, `tcont=1`에서도 장면이 그대로 남습니다 (아래 "예측 분포"). `context_noise_y_tail=true`면 뒤 latent에도 같은 σ로 노이즈를 줍니다. 학습 스크립트는 이것이 기본이고, 이 옵션이 없던 checkpoint는 전처럼 첫 latent에만 줍니다.
 
 ## RoboCasa365 데이터
 
@@ -33,7 +33,15 @@ sbatch scripts/train/robocasa_training_context_noise.sbatch
 - natStr는 사용자당 작업 5개까지이고, 예약돼 기다리는 작업도 셉니다. 연구실이 계정 하나를 같이 쓰므로, 학습 중에는 5개 중 2개(실행 1개, 예약 1개)를 씁니다. 자리가 없어 예약이 안 되면 로그에 `Queued next job: none`이 남고, 그 작업으로 학습이 멈춥니다.
 - 학습이 시작 후 15분 안에 멈추면 같은 노드에서 다시 시작합니다 (최대 3번). 모델을 GPU로 옮기다 GPU 메모리 부족으로 실패한 작업이 2개 있었습니다. GH200은 CPU 메모리가 차면 GPU 메모리를 CPU 메모리로 쓰는데, 그때 약 54GB가 그렇게 쓰이고 있었습니다.
 - 한 번 시작한 학습은 노드 수를 바꾸지 않습니다 (ZeRO 옵티마이저 상태가 GPU 수대로 나뉘어 저장됨).
-- 비교용 기준 모델: `CONTEXT_NOISE=false`
+- 비교용 기준 모델: `CONTEXT_NOISE=false`. `CONTEXT_NOISE_Y_TAIL=false`면 `y`의 첫 latent에만 노이즈를 줍니다 (이 옵션 전의 run).
+- 다른 run의 checkpoint 가중치로 새 run을 시작할 수 있습니다. optimizer와 LR 스케줄(warmup 5%, cosine)은 새로 시작합니다.
+
+  ```bash
+  OUTPUT_DIR=<새 run 폴더> MAX_STEPS=5000 CHAIN_JOBS=1 sbatch scripts/train/robocasa_training_context_noise.sbatch pretrained_model_path=<checkpoint>
+  ```
+
+  - 데이터 seed가 `42 + 0`이라 원래 run의 첫 작업과 같은 shard 순서를 다시 밟습니다. 그래서 새 run이 그 작업보다 짧으면 원래 run의 heldout shard는 방문하지 않습니다. 검증할 때는 `--shards-from`에 원래 checkpoint를 줍니다 (아래 "검증").
+  - sbatch는 `PYTHONPATH`를 제출한 checkout으로 잡습니다. 환경의 editable install은 학습 checkout(`projects/wam_project`)을 가리킵니다.
 - 환경: DreamZero `pyproject.toml` 기준에 `pyarrow<20`, `pandas<3`, `matplotlib`이 더 필요합니다 (numpy 1.26). aarch64(GH200)에는 torch 2.8.0 cu128 휠이 없어 torch 2.9.0을 씁니다.
 
 ## 추론에서 context 노이즈 수준 주기
@@ -44,7 +52,7 @@ result_batch, video_pred = policy.lazy_joint_forward_causal(batch, tcont_context
 
 - `tcont_context`: 0~1 실수, 또는 샘플마다 다른 값이면 `[B]` 텐서. `None`(기본)이면 원래 추론과 같습니다.
 - 학습과 같은 식으로 KV cache에 넣는 관측 latent를 노이즈하고, 그 토큰의 timestep을 `1000·σ`로 줍니다.
-- 첫 프레임 `y`와 CLIP 특징은 KV cache를 새로 시작하는 호출의 수준으로 한 번 노이즈합니다. 학습처럼 에피소드마다 수준 하나를 쓰는 게 기본이고, 호출마다 바꾸면 새로 들어오는 관측 프레임에만 적용됩니다.
+- 첫 프레임 `y`(첫 latent, `context_noise_y_tail`이면 전체)와 CLIP 특징은 KV cache를 새로 시작하는 호출의 수준으로 한 번 노이즈합니다. 학습처럼 에피소드마다 수준 하나를 쓰는 게 기본이고, 호출마다 바꾸면 새로 들어오는 관측 프레임에만 적용됩니다.
 - 노이즈는 KV cache를 시작할 때 seed를 고정한 generator에서 뽑습니다. 그래서 같은 입력이면 결과가 같고, GPU 2개로 CFG를 나눠 돌릴 때도 두 GPU가 같은 노이즈를 씁니다.
 - 코드: `WANPolicyHead.lazy_joint_video_action`. DROID용 서버(`socket_test_optimized_AR.py` 등)는 아직 이 값을 받지 않습니다.
 
@@ -88,6 +96,7 @@ sbatch scripts/inference/robocasa_val_loss.sbatch <checkpoint> --resume-steps 0 
   - heldout: 학습한 task에서 어느 worker도 방문하지 않은 shard
   - unseen: shard를 하나도 방문하지 않은 task
 - `--resume-steps`: run의 작업들이 시작한 global step. 이어서 학습할 때마다 데이터 seed가 `42 + 시작 step`으로 바뀌므로 필요합니다.
+- `--shards-from <checkpoint>`: 다른 run의 checkpoint에서 시작한 run(`pretrained_model_path`)은 그 checkpoint로 shard 묶음을 만듭니다. `--resume-steps`도 그 run의 것을 줍니다. 아래 "예측 분포"도 같습니다.
 - 기본값: 묶음마다 task 40개 (trained와 heldout은 같은 task, atomic과 composite 반씩), task마다 샘플 4개, 수준 `0, 1/32, 1/16, 1/8, 1/4, 1/2, 1`. batch가 bf16으로 바뀌므로 수준은 2의 거듭제곱으로 둡니다.
 - 결과: `<run>/val_loss/<checkpoint>/summary.json` (묶음·수준별 평균과 표준오차), `records.jsonl` (샘플별). 로그 끝에 두 loss의 표가 찍힙니다.
 - 데이터셋 순서가 파일 시스템의 glob 순서라 학습한 클러스터에서 돌립니다.

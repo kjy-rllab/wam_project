@@ -118,6 +118,9 @@ class WANPolicyHeadConfig(PretrainedConfig):
     context_noise: bool = field(
         default=False, metadata={"help": "Noise the clean video context (latents, first-frame y and CLIP feature) with one level per sample."}
     )
+    context_noise_y_tail: bool = field(
+        default=False, metadata={"help": "With context_noise, also noise the latents of y after the first (the encoded zero frames), which carry the first frame through the causal VAE encoder."}
+    )
     # Decoupled inference config - allows video to stay noisy while action fully denoises
     decouple_inference_noise: bool = field(
         default=False, metadata={"help": "Use decoupled noise schedules during inference (video stays noisy, action fully denoises)."}
@@ -761,7 +764,8 @@ class WANPolicyHead(ActionHead):
             noisy_actions = None
             training_target_action = None
 
-        # Noised context (tmrl): context latents, first-frame latent in y and CLIP feature share one level per sample.
+        # Noised context (tmrl): context latents, first-frame latent in y (all of y's latents with context_noise_y_tail)
+        # and CLIP feature share one level per sample.
         # tcont_context=0 is the clean context (aug_t=0) of the original model. A batch can fix the levels
         # (eval_utils/robocasa_val_loss.py); training samples them.
         if self.config.context_noise:
@@ -773,6 +777,8 @@ class WANPolicyHead(ActionHead):
             s = sigma_context.view(-1, 1, 1, 1, 1)
             context_latents = ((1 - s) * latents + s * torch.randn_like(latents)).to(latents.dtype)
             ys[:, 4:, :1] = context_latents[:, :1].transpose(1, 2)
+            if self.config.context_noise_y_tail:
+                ys[:, 4:, 1:] = ((1 - s) * ys[:, 4:, 1:] + s * torch.randn_like(ys[:, 4:, 1:])).to(ys.dtype)
             clip_feas = clip_feas * torch.rsqrt(clip_feas.pow(2).mean(-1, keepdim=True) + 1e-6)
             clip_feas = (1 - s[:, 0, 0]) * clip_feas + s[:, 0, 0] * torch.randn_like(clip_feas)
             aug_t = (sigma_context * self.scheduler.num_train_timesteps)[:, None].expand(-1, seq_len)
@@ -1151,8 +1157,9 @@ class WANPolicyHead(ActionHead):
             self.context_generator = torch.Generator(noise_obs.device).manual_seed(self.seed + 1)  # not the initial-noise seed
 
         # Noised context (tmrl): observed latents written to the KV cache get level tcont_context in [0, 1] (float or [B])
-        # as in training, given to the DiT as their timestep. The first-frame y and CLIP feature get the level of the call
-        # that starts the KV cache. The seeded generator gives CFG-parallel ranks the same context noise.
+        # as in training, given to the DiT as their timestep. The first-frame y (its first latent, or all with
+        # context_noise_y_tail) and CLIP feature get the level of the call that starts the KV cache. The seeded generator
+        # gives CFG-parallel ranks the same context noise.
         context, context_timestep = image, torch.zeros([batch_size, 1], device=noise_obs.device, dtype=torch.int64)
         if tcont_context is not None:
             tcont = torch.as_tensor(tcont_context, dtype=torch.float32, device=noise_obs.device).expand(batch_size)
@@ -1162,6 +1169,10 @@ class WANPolicyHead(ActionHead):
             context = ((1 - s) * image + s * noise).to(image.dtype)
             if self.current_start_frame == 0:
                 self.ys[:, 4:, :1] = context[:, :1].transpose(1, 2)
+                if self.config.context_noise_y_tail:
+                    tail = self.ys[:, 4:, 1:]
+                    noise = torch.randn(tail.shape, generator=self.context_generator, device=noise_obs.device, dtype=tail.dtype)
+                    self.ys[:, 4:, 1:] = ((1 - s) * tail + s * noise).to(tail.dtype)
                 clip = self.clip_feas * torch.rsqrt(self.clip_feas.pow(2).mean(-1, keepdim=True) + 1e-6)
                 noise = torch.randn(clip.shape, generator=self.context_generator, device=noise_obs.device, dtype=clip.dtype)
                 self.clip_feas = ((1 - s[:, 0, 0]) * clip + s[:, 0, 0] * noise).to(clip.dtype)
