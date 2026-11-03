@@ -106,6 +106,7 @@ python eval_utils/robocasa_sim_eval.py --servers 0=tcp://127.0.0.1:5555 0.125=tc
 - task: 학습에서 가장 많이 뽑힌 atomic task 8개(seen)와, 뽑힌 적은 없지만 반대 task는 학습한 atomic task 8개(unseen, 예: CloseMicrowave ↔ OpenMicrowave). `--seen`, `--unseen`으로 바꿉니다.
 - 에피소드 e는 seed e로 장면을 만들어서 모든 수준이 같은 장면을 씁니다. 기본 10 에피소드, `--split pretrain`, 최대 step은 RoboCasa dataset registry의 task horizon(300~750)입니다.
 - 서버는 앞 서버가 포트를 연 다음에 하나씩 시작합니다 (모델을 한꺼번에 불러오지 않도록). 서버가 모두 뜨면 `Local tunnel:` 줄이 찍힙니다.
-- 수준끼리는 동시에 돌고, 한 수준 안에서는 에피소드를 하나씩 돌립니다 (서버 하나는 세션 하나만 받음). 끝난 에피소드는 건너뛰므로 같은 명령을 다시 돌리면 이어서 합니다.
+- 수준끼리는 동시에 돌고, 서버 하나는 세션 하나만 받습니다. 같은 수준을 여러 번 쓰면(`SERVE_LEVELS="0 0"`) 그 수준의 서버들이 에피소드를 나눠 돌립니다. 끝난 에피소드는 건너뛰므로 같은 명령을 다시 돌리면 이어서 합니다.
 - 결과: task×수준별 성공/에피소드 표, seen·unseen 성공률과 한 번이라도 성공한 task 수, `results.json`. 에피소드마다 `client.log`와 `summary.json`이 남습니다.
+- 예측 영상: `--predicted-videos N`이면 앞 N개 task의 에피소드 0에서, 모델이 행동과 함께 예측한 영상을 서버에서 받아 저장합니다 (서버 `get_video`: video latent를 VAE로 디코딩). `predicted.mp4`는 왼쪽·오른쪽·손목 카메라, `compare.mp4`는 같은 step의 시뮬레이터 화면(위)과 예측(아래)입니다. 24 step 청크마다 8프레임이라 프레임 i가 step 3i입니다.
 - 속도: 서버마다 처음 두 호출은 compile 때문에 약 2분 15초와 30초가 걸리고, 그 뒤로는 서버 2개가 동시에 돌아도 호출당 약 2.2초입니다. 기본 설정(task 16개 × 10 에피소드, 평균 horizon 525 step)이면 수준들이 동시에 돌아서 전체 3시간쯤으로 예상합니다. 다 돌면 서버 작업은 `scancel`로 끝냅니다.

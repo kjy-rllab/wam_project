@@ -6,6 +6,10 @@ per-step history. As in training, an action chunk of 24 steps pairs with its 8 f
 after the first gets those 8 frames plus the frame before them, and the client must run whole chunks
 (--replan-steps 24). The first call of an episode uses only the current frame, which starts a new KV cache.
 
+get_video returns the video the model predicted along with the actions of the last session: its video latents decoded
+by the VAE, uint8 frames of the views' 2x2 grid [left, wrist; right, black]. Frame 0 is the first observation, then
+each call adds the 8 frames of its action chunk, so frame i is the prediction for step 3i.
+
     torchrun --nproc_per_node=1 eval_utils/serve_robocasa.py --model-path <checkpoint dir> [--tcont-context 0.3]
 
 With --nproc_per_node=2 the two CFG branches run on separate GPUs.
@@ -66,7 +70,8 @@ def main(args: Args):
 
     cfg = policy.modality_configs
     horizon = len(cfg.action.delta_indices)
-    stride = horizon // (4 * policy.trained_model.action_head.num_frame_per_block)  # Wan VAE: 4 frames per latent
+    block = policy.trained_model.action_head.num_frame_per_block  # latent frames predicted per call
+    stride = horizon // (4 * block)  # Wan VAE: 4 frames per latent
     names = lambda keys: [k.split(".", 1)[1] for k in keys]
     modality = {
         "video": {"modality_keys": names(cfg.video.modality_keys), "delta_indices": list(range(-horizon, 1, stride))},
@@ -79,7 +84,7 @@ def main(args: Args):
     print(f"Serving {args.model_path} on port {args.port} (tcont_context={args.tcont_context}); "
           f"run the client with --replan-steps {horizon}", flush=True)
 
-    session = None
+    session, latents = None, []
     while True:
         request = msgpack.unpackb(socket.recv(), object_hook=decode, raw=False)
         try:
@@ -101,12 +106,19 @@ def main(args: Args):
                 obs |= {k: observation[k][0] for k in cfg.language.modality_keys}
                 tcont = options.get("tcont_context", args.tcont_context)
                 dist.broadcast_object_list([(obs, tcont)], src=0, group=group)
-                result, _ = policy.lazy_joint_forward_causal(Batch(obs=obs), tcont_context=tcont)
+                result, video_pred = policy.lazy_joint_forward_causal(Batch(obs=obs), tcont_context=tcont)
+                # The session's predicted video latents, for get_video. A call that starts a KV cache also returns the
+                # latent of its first frame, which only the first call of the episode keeps.
+                latents = [video_pred] if first else latents + [video_pred[:, :, -block:]]
                 actions = {k: np.asarray(v, dtype=np.float32).reshape(horizon, -1) for k, v in result.act.items()}
                 # The data stores these as -1/1; the client takes the Gym convention (0/1, closed at >= 0.5)
                 for k in ("action.gripper_close", "action.control_mode"):
                     actions[k] = (actions[k] + 1) / 2
                 response = [actions, {}]
+            elif endpoint == "get_video":
+                with torch.inference_mode():
+                    video = policy.trained_model.action_head.vae.decode(torch.cat(latents, dim=2))[0]  # C T H W
+                response = ((video.float() + 1) * 127.5).round().byte().permute(1, 2, 3, 0).cpu().numpy()
             else:
                 raise ValueError(f"unknown endpoint {endpoint!r}")
         except Exception as e:

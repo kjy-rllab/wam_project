@@ -11,7 +11,8 @@
 # KISTI hangang: serve a checkpoint to the local RoboCasa client (eval_utils/serve_robocasa.py, CFG on 2 GPUs).
 # Submit from the dreamzero folder on /scratch:
 #   $ sbatch scripts/inference/robocasa_serve.sbatch <checkpoint dir> [--tcont-context 0.3]
-# One server per context noise level, each on an equal share of the GPUs (eval_utils/robocasa_sim_eval.py):
+# One server per context noise level, each on an equal share of the GPUs (eval_utils/robocasa_sim_eval.py; a level
+# given twice gets two servers, which share its episodes):
 #   $ SERVE_LEVELS="0 0.0625 0.125 0.25" sbatch --gres=gpu:4 --time=08:00:00 scripts/inference/robocasa_serve.sbatch <checkpoint dir>
 # Then run on the local PC the tunnel command that the job log prints (ports 5555, 5556, ... go to the servers).
 
