@@ -185,7 +185,7 @@ def main(args: Args):
             frame = (frame.cuda().permute(0, 4, 1, 2, 3).float() / 127.5 - 1).to(torch.bfloat16)
             own_y, partner_y = (encode_image(x.transpose(1, 2), head.num_frames, *x.shape[-2:])[1][:, 4:]
                                 for x in (gt_video[:, :, :1], frame))
-            norm = lambda y: y.float().norm(dim=(1, 3, 4))[0]
+            norm = lambda y: torch.linalg.vector_norm(y.float(), dim=(1, 3, 4))[0]
             out |= {"partner": f"{task[dp].replace('/', '_')}_traj{tp}_step{ip}",
                     "tail_change": (norm(own_y - partner_y) / norm(own_y)).cpu().numpy()}
 
