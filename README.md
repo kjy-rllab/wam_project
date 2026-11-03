@@ -12,6 +12,7 @@ WAM 프로젝트 작업 저장소입니다.
 - 샘플마다 수준 하나: `tcont ~ U[0,1)`, `σ = 5·tcont / (1 + 4·tcont)` (모델 스케줄의 shift 5), `x̃ = (1-σ)·x + σ·ε`. CLIP 특징은 RMS 정규화 후 같은 σ로 섞습니다.
 - 모델에는 깨끗한 토큰의 timestep으로 수준을 알려 줍니다 (`aug_t = 1000·σ`). `tcont=0`이면 원래 모델과 같습니다.
 - 코드: `dreamzero/groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py` (`WANPolicyHead.forward`)
+- 알려진 문제: `y`는 `[첫 프레임, 0 프레임들]`의 VAE latent인데 노이즈는 첫 latent에만 줍니다. causal VAE 인코더가 뒤 latent(특히 1, 2번째)에 첫 프레임 정보를 담고, 모델은 그 latent에서 장면을 읽습니다. 그래서 `tcont=1`에서도 장면이 그대로 남습니다 (아래 "예측 분포").
 
 ## RoboCasa365 데이터
 
@@ -110,3 +111,22 @@ python eval_utils/robocasa_sim_eval.py --servers 0=tcp://127.0.0.1:5555 0.125=tc
 - 결과: task×수준별 성공/에피소드 표, seen·unseen 성공률과 한 번이라도 성공한 task 수, `results.json`. 에피소드마다 `client.log`와 `summary.json`이 남습니다.
 - 예측 영상: `--predicted-videos N`이면 앞 N개 task의 에피소드 0에서, 모델이 행동과 함께 예측한 영상을 서버에서 받아 저장합니다 (서버 `get_video`: video latent를 VAE로 디코딩). `predicted.mp4`는 왼쪽·오른쪽·손목 카메라, `compare.mp4`는 같은 step의 시뮬레이터 화면(위, 모델 입력처럼 카메라마다 가운데 95%를 잘라 224로 줄임)과 예측(아래)입니다. 24 step 청크마다 8프레임이라 프레임 i가 step 3i입니다.
 - 속도: 서버마다 처음 두 호출은 compile 때문에 약 2분 15초와 30초가 걸리고, 그 뒤로는 서버 2개가 동시에 돌아도 호출당 약 2.2초입니다. 기본 설정(task 16개 × 10 에피소드, 평균 horizon 525 step)이면 수준들이 동시에 돌아서 전체 3시간쯤으로 예상합니다. 다 돌면 서버 작업은 `scancel`로 끝냅니다.
+
+### 예측 분포
+
+```bash
+# hangang, 학습 중이 아닌 checkout의 dreamzero 폴더 (GPU 4개)
+sbatch scripts/inference/robocasa_context_noise_samples.sbatch <checkpoint> --resume-steps 0 9000 18000
+# y의 첫 latent 뒤 latent들을 다른 context의 것으로 바꿔서
+sbatch --time=02:00:00 scripts/inference/robocasa_context_noise_samples.sbatch <checkpoint> --resume-steps 0 9000 18000 --y-tail swap --seeds 2
+```
+
+- `eval_utils/robocasa_context_noise_samples.py`는 수준마다 비디오와 action을 여러 seed로 뽑아, context 노이즈가 context 조건부 분포(수준 0)와 marginal(수준 1) 사이를 잇는지, 그 사이의 비디오가 그럴듯한지 봅니다.
+- context: 데이터 loss의 heldout shard에서 task 24개 × trajectory 2개 = 48개. 임의의 step i부터 48 step 동안 지시문이 같은 곳을 고릅니다.
+- 시뮬레이션 서버처럼 두 번 호출합니다. 첫 호출은 step i 프레임 1장, 둘째 호출은 step i … i+24 프레임 9장을 받고, 각각 action 24개와 프레임 8장(step i+3 … i+48)을 예측합니다. 예측 latent는 그 호출이 받은 GT latent 뒤에 붙여 디코딩합니다.
+- 기본값: 수준 `0, 1/32, 1/16, 1/8, 3/16, 1/4, 3/8, 1/2, 1`, seed 5개. 같은 seed는 모든 수준에서 같은 초기 노이즈와 context 노이즈를 씁니다.
+- 결과 (`<run>/context_noise_samples/<checkpoint>[_y_tail_swap]/`): `samples/<context>.npz` (예측·GT action, 예측·GT·VAE 복원 프레임의 CLIP 특징과 오차·선명도·움직임), `latents/<context>.pt` (예측 video latent), `videos/<context>_seed<k>.mp4` (seed 0, 1; 행은 GT와 수준들, 열은 왼쪽·오른쪽·손목 카메라).
+- `--y-tail swap`: `y`의 첫 latent 뒤 latent들을 context 목록에서 절반 떨어진 context(다른 task)의 첫 프레임으로 만든 것으로 바꿉니다. latent마다 바뀐 비율은 `tail_change`로 저장됩니다.
+- 끝난 context는 건너뛰므로 같은 명령을 다시 내면 이어서 합니다.
+- 시간 (GH200 4개): 준비 약 15분, 그 뒤 GPU마다 context 12개를 context당 약 6분(첫 context는 compile 포함 약 9분)씩 돌려 전체 약 1시간 30분. `--y-tail swap --seeds 2`는 context당 약 3분, 전체 약 50분.
+- checkpoint-25000: 수준 1에서도 예측 비디오가 CLIP으로 48개 context 중 자기 context를 97% 이상 맞혀, marginal이 아닙니다. `--y-tail swap`이면 첫 호출 프레임의 67–94%가 바꿔 넣은 장면을 그립니다 (위 "알려진 문제"). 노이즈가 지우는 것은 주로 둘째 호출의 새 관측이고, action은 σ ≥ 0.83에서야 크게 바뀝니다. 중간 수준의 비디오는 흐려지지 않고 action과 함께 움직입니다.

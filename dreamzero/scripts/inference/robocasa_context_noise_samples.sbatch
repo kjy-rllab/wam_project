@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:4  # CPUs and memory follow the GPU count (hangang rule for shared nodes)
-#SBATCH --time=04:00:00  # the defaults (48 contexts x 9 levels x 5 seeds) take about 2 h on 4 GPUs
+#SBATCH --time=04:00:00  # the defaults (48 contexts x 9 levels x 5 seeds) take about 1.5 h on 4 GPUs, --y-tail swap --seeds 2 about 50 min
 #SBATCH --comment="field=robotics;appl=pytorch"
 #SBATCH --output=%x-%j.out
 #
