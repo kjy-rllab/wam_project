@@ -42,26 +42,19 @@ class Args:
     output_dir: str | None = None  # default: <run dir>/val_loss/<checkpoint>
 
 
-def main(args: Args):
-    os.environ.setdefault("ATTENTION_BACKEND", "torch")  # as in training
-    dist.init_process_group("gloo", timeout=datetime.timedelta(hours=12))  # only for the final barrier
-    rank, world = dist.get_rank(), dist.get_world_size()
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-    model_dir = Path(args.model_path)
-    output_dir = Path(args.output_dir or model_dir.parent / "val_loss" / model_dir.name)
-    cfg = OmegaConf.load(model_dir / "experiment_cfg" / "conf.yaml")
-    global_step = json.loads((model_dir / "trainer_state.json").read_text())["global_step"]
-
+def shard_sets(cfg, global_step: int, resume_steps: list[int], train_gpus: int, tasks: int, seed: int):
+    """The run's training mixture, the task of each of its datasets (e.g. atomic/CloseMicrowave), the datasets the run
+    sampled, and the shards to evaluate: (set, dataset, shard, data seed of a trained visit, samples trained)."""
     # Shard visits up to this checkpoint. Schedule entry k * slots + j is the k-th shard of data worker j, which takes
     # per_visit samples from it and gives one batch every `workers` steps.
     mixture = instantiate(cfg.train_dataset)
-    task = [str(Path(*Path(ds.dataset_path).parts[-4:-2])) for ds in mixture.datasets]  # e.g. atomic/CloseMicrowave
+    task = [str(Path(*Path(ds.dataset_path).parts[-4:-2])) for ds in mixture.datasets]
     per_visit = int(mixture.datasets[0].num_steps_per_shard * mixture.shard_sampling_rate)
     workers, batch_size = cfg.training_args.dataloader_num_workers, cfg.training_args.per_device_train_batch_size
-    slots, visit_steps = args.train_gpus * workers, per_visit * workers // batch_size
+    slots, visit_steps = train_gpus * workers, per_visit * workers // batch_size
     base_seed = mixture.seed
     visited, first_visits = set(), {}  # first_visits: dataset -> [(shard, data seed, samples trained)]
-    for start, end in zip(args.resume_steps, args.resume_steps[1:] + [global_step]):
+    for start, end in zip(resume_steps, resume_steps[1:] + [global_step]):
         end = min(end, global_step)
         if end <= start:
             continue
@@ -71,17 +64,30 @@ def main(args: Args):
         for d, s in schedule[:slots]:
             first_visits.setdefault(d, []).append((s, base_seed + start, min(per_visit, (end - start) // workers * batch_size)))
 
-    rng = np.random.default_rng(args.seed)
+    rng = np.random.default_rng(seed)
     unvisited = [[s for s in range(ds.num_shards) if (d, s) not in visited] for d, ds in enumerate(mixture.datasets)]
-    units = []  # (set, dataset, shard, data seed of a trained visit, samples trained)
+    units = []
     for kind in ("atomic", "composite"):
         both = [d for d in sorted(first_visits) if unvisited[d] and task[d].startswith(kind)]
-        for d in rng.permutation(both)[: args.tasks // 2]:
+        for d in rng.permutation(both)[: tasks // 2]:
             units.append(("trained", d, *first_visits[d][rng.integers(len(first_visits[d]))]))
             units.append(("heldout", d, rng.choice(unvisited[d]), None, None))
     seen = {d for d, _ in visited}
-    for d in rng.permutation([d for d in range(len(task)) if d not in seen])[: args.tasks]:
+    for d in rng.permutation([d for d in range(len(task)) if d not in seen])[: tasks]:
         units.append(("unseen", d, rng.integers(mixture.datasets[d].num_shards), None, None))
+    return mixture, task, seen, units
+
+
+def main(args: Args):
+    os.environ.setdefault("ATTENTION_BACKEND", "torch")  # as in training
+    dist.init_process_group("gloo", timeout=datetime.timedelta(hours=12))  # only for the final barrier
+    rank, world = dist.get_rank(), dist.get_world_size()
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    model_dir = Path(args.model_path)
+    output_dir = Path(args.output_dir or model_dir.parent / "val_loss" / model_dir.name)
+    cfg = OmegaConf.load(model_dir / "experiment_cfg" / "conf.yaml")
+    global_step = json.loads((model_dir / "trainer_state.json").read_text())["global_step"]
+    mixture, task, seen, units = shard_sets(cfg, global_step, args.resume_steps, args.train_gpus, args.tasks, args.seed)
     if rank == 0:
         print(f"Checkpoint step {global_step}: {len(seen)} tasks sampled, {len(task) - len(seen)} never; "
               f"evaluating {len(units)} shards x {args.samples_per_task} samples x {len(args.levels)} levels", flush=True)
