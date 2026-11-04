@@ -18,8 +18,8 @@ the swap is saved as tail_change.
 
 Saved per context: samples/<context>.npz with the predicted and GT actions, CLIP image embeddings (the model's image
 encoder) of the predicted, GT and VAE-reconstructed frames of each view, and their pixel statistics (error to GT,
-sharpness, motion); latents/<context>.pt with the predicted video latents; videos/<context>_seed<k>.mp4 for seeds 0
-and 1, rows GT and then the levels, the views as the model sees them.
+sharpness, motion); latents/<context>.pt with the predicted video latents; videos/<context>_seed<k>.mp4 for the first
+--video-seeds seeds, rows GT and then the levels, the views as the model sees them.
 
     torchrun --nproc_per_node=4 eval_utils/robocasa_context_noise_samples.py --model-path <checkpoint dir> --resume-steps 0 9000 18000
 """
@@ -60,6 +60,7 @@ class Args:
     levels: list[float] = dataclasses.field(
         default_factory=lambda: [0.0, 1 / 32, 1 / 16, 1 / 8, 3 / 16, 1 / 4, 3 / 8, 1 / 2, 1.0])
     seeds: int = 5  # samples per context and level
+    video_seeds: int = 2  # seeds whose videos are saved
     tasks: int = 24  # heldout tasks, half atomic and half composite
     contexts_per_task: int = 2  # trajectories of the task's heldout shard
     seed: int = 0
@@ -206,7 +207,7 @@ def main(args: Args):
                                                           for k in keys.action.modality_keys], axis=1) for result, _ in results])
                 samples.append(stats(pred, previous, gt[1:]) | {"clip": embed(pred), "actions": actions})
                 latents.append(torch.cat([first, second], 2)[0].cpu())
-                if seed < 2:
+                if seed < args.video_seeds:
                     videos.setdefault(seed, []).append(pred.byte())
         shape = (args.seeds, len(args.levels))
         out |= {k: np.stack([s[k] for s in samples]).reshape(shape + samples[0][k].shape) for k in samples[0]}
