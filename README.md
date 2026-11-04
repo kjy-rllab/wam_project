@@ -12,7 +12,7 @@ WAM 프로젝트 작업 저장소입니다.
 - 샘플마다 수준 하나: `tcont ~ U[0,1)`, `σ = 5·tcont / (1 + 4·tcont)` (모델 스케줄의 shift 5), `x̃ = (1-σ)·x + σ·ε`. CLIP 특징은 RMS 정규화 후 같은 σ로 섞습니다.
 - 모델에는 깨끗한 토큰의 timestep으로 수준을 알려 줍니다 (`aug_t = 1000·σ`). `tcont=0`이면 원래 모델과 같습니다.
 - 코드: `dreamzero/groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py` (`WANPolicyHead.forward`)
-- `y`의 뒤 latent: `y`는 `[첫 프레임, 0 프레임들]`의 VAE latent입니다. causal VAE 인코더가 뒤 latent(특히 1, 2번째)에 첫 프레임 정보를 담습니다. 노이즈를 첫 latent에만 주고 학습한 `dreamzero_robocasa_context_noise`는 그 latent에서 장면을 읽어서, `tcont=1`에서도 장면이 그대로 남습니다 (아래 "예측 분포"). `context_noise_y_tail=true`면 뒤 latent에도 같은 σ로 노이즈를 줍니다. 학습 스크립트는 이것이 기본이고, 이 옵션이 없던 checkpoint는 전처럼 첫 latent에만 줍니다.
+- `y`의 뒤 latent: `y`는 `[첫 프레임, 0 프레임들]`의 VAE latent입니다. causal VAE 인코더가 뒤 latent(특히 1, 2번째)에 첫 프레임 정보를 담습니다. 노이즈를 첫 latent에만 주고 학습한 `dreamzero_robocasa_context_noise`는 그 latent에서 장면을 읽어서, `tcont=1`에서도 장면이 그대로 남습니다 (아래 "예측 분포"). `context_noise_y_tail=true`면 뒤 latent에도 같은 σ로 노이즈를 줍니다. 학습 스크립트는 이것이 기본이고, 이 옵션이 없던 checkpoint는 전처럼 첫 latent에만 줍니다. checkpoint-25000에서 이 옵션으로 5000 step 이어서 학습한 `dreamzero_robocasa_context_noise_y_tail`은 `tcont=1`에서 장면을 모릅니다.
 
 ## RoboCasa365 데이터
 
@@ -139,3 +139,4 @@ sbatch --time=02:00:00 scripts/inference/robocasa_context_noise_samples.sbatch <
 - 끝난 context는 건너뛰므로 같은 명령을 다시 내면 이어서 합니다.
 - 시간 (GH200 4개): 준비 약 15분, 그 뒤 GPU마다 context 12개를 context당 약 6분(첫 context는 compile 포함 약 9분)씩 돌려 전체 약 1시간 30분. `--y-tail swap --seeds 2`는 context당 약 3분, 전체 약 50분.
 - checkpoint-25000: 수준 1에서도 예측 비디오가 CLIP으로 48개 context 중 자기 context를 97% 이상 맞혀, marginal이 아닙니다. `--y-tail swap`이면 첫 호출 프레임의 67–94%가 바꿔 넣은 장면을 그립니다 (위 "알려진 문제"). 노이즈가 지우는 것은 주로 둘째 호출의 새 관측이고, action은 σ ≥ 0.83에서야 크게 바뀝니다. 중간 수준의 비디오는 흐려지지 않고 action과 함께 움직입니다.
+- `dreamzero_robocasa_context_noise_y_tail` checkpoint-5000 (checkpoint-25000에서 `context_noise_y_tail=true`로 5000 step): 수준 1에서는 48개 context 중 자기 것을 25%만 맞힙니다. 같은 task 안에서는 53–55%(우연 50%)라, 언어와 state만 아는 분포에 가깝습니다. `--y-tail swap`도 결과를 바꾸지 않습니다. 수준 0의 action 오차는 그대로이고 비디오 오차는 조금 작습니다 (0.081 / 0.083, 15.0 / 12.6; checkpoint-25000은 0.092 / 0.086, 16.1 / 13.3). 수준을 올리면 예측이 수준 1 쪽으로 고르게 옮겨 갑니다. σ ≤ 0.83의 비디오는 그럴듯하고, 수준 1에서는 지시문에 맞는 다른 부엌을 그립니다 (realism 0.744, checkpoint-25000은 0.799). checkpoint-2000에서 이미 대부분 바뀌었습니다.
