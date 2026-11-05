@@ -13,6 +13,7 @@
 # the run's jobs started from:
 #   $ sbatch scripts/inference/robocasa_context_noise_samples.sbatch <checkpoint dir> --resume-steps 0 9000 18000
 #   $ sbatch scripts/inference/robocasa_context_noise_samples.sbatch <checkpoint dir> --resume-steps 0 9000 18000 --y-tail swap --seeds 2
+#   $ sbatch scripts/inference/robocasa_context_noise_samples.sbatch <checkpoint dir> --resume-steps 0 --modalities text state  # video context clean
 # A resubmission skips the contexts already saved.
 
 WORK=${WORK:-/scratch/t526a02/jooyoung}

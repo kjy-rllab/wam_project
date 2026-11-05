@@ -121,6 +121,15 @@ class WANPolicyHeadConfig(PretrainedConfig):
     context_noise_y_tail: bool = field(
         default=False, metadata={"help": "With context_noise, also noise the latents of y after the first (the encoded zero frames), which carry the first frame through the causal VAE encoder."}
     )
+    context_noise_text: bool = field(
+        default=False, metadata={"help": "Noise the instruction embedding (every text_len position of the T5 output) with its own level per sample, mixed with noise of RMS context_noise_text_rms."}
+    )
+    context_noise_text_rms: float = field(
+        default=0.085, metadata={"help": "RMS of a umt5-xxl token embedding (RoboCasa prompts: 0.0847): the scale of the text noise."}
+    )
+    context_noise_state: bool = field(
+        default=False, metadata={"help": "Noise the robot state (its real dims, state_mask) with its own level per sample."}
+    )
     # Decoupled inference config - allows video to stay noisy while action fully denoises
     decouple_inference_noise: bool = field(
         default=False, metadata={"help": "Use decoupled noise schedules during inference (video stays noisy, action fully denoises)."}
@@ -205,6 +214,7 @@ class WANPolicyHead(ActionHead):
         self.ys = None
         self.current_start_frame = 0
         self.language = None
+        self.prompt_embs = None
 
         self.ip_rank = 0
         self.ip_size = 1
@@ -590,6 +600,14 @@ class WANPolicyHead(ActionHead):
     def prepare_extra_input(self, latents=None):
         return {}
 
+    def noised_context(self, x, tcont, scale=1.0, generator=None):
+        """tmrl mix x̃ = (1-σ)·x + σ·scale·ε with σ = shift·t / (1 + (shift-1)·t), level t of each sample (tcont: [B])."""
+        tcont = tcont.float()
+        sigma = self.scheduler.shift * tcont / (1 + (self.scheduler.shift - 1) * tcont)
+        s = sigma.view(-1, *[1] * (x.dim() - 1))
+        noise = torch.randn(x.shape, generator=generator, device=x.device, dtype=x.dtype)
+        return ((1 - s) * x + s * scale * noise).to(x.dtype)
+
     def add_lora_to_model(self, model, lora_rank=4, lora_alpha=4, lora_target_modules="q,k,v,o,ffn.0,ffn.2", init_lora_weights="kaiming") -> nn.Module:
         # Add LoRA to UNet
         self.lora_alpha = lora_alpha
@@ -784,6 +802,20 @@ class WANPolicyHead(ActionHead):
             aug_t = (sigma_context * self.scheduler.num_train_timesteps)[:, None].expand(-1, seq_len)
         else:
             context_latents, aug_t = latents, None
+
+        # Language and state (tmrl): their own level per sample, mixed like the video context. The model gets no level
+        # signal for them (tmrl's policy infers it from the context). Every text_len position is noised so that the
+        # token count stays hidden; the padded state dims (state_mask false) stay zero.
+        if self.config.context_noise_text:
+            tcont_text = data.get("tcont_text")
+            if tcont_text is None:
+                tcont_text = torch.rand(latents.shape[0], device=self._device)
+            prompt_embs = self.noised_context(prompt_embs, tcont_text, self.config.context_noise_text_rms)
+        if self.config.context_noise_state:
+            tcont_state = data.get("tcont_state")
+            if tcont_state is None:
+                tcont_state = torch.rand(latents.shape[0], device=self._device)
+            state_features = torch.where(data["state_mask"], self.noised_context(state_features, tcont_state), state_features)
 
         # Compute loss
         with torch.amp.autocast(dtype=torch.bfloat16, device_type=torch.device(self._device).type):
@@ -998,7 +1030,7 @@ class WANPolicyHead(ActionHead):
 
         return True
 
-    def lazy_joint_video_action(self, backbone_output: BatchFeature, action_input: BatchFeature, latent_video: torch.Tensor | None = None, tcont_context: float | torch.Tensor | None = None) -> BatchFeature:
+    def lazy_joint_video_action(self, backbone_output: BatchFeature, action_input: BatchFeature, latent_video: torch.Tensor | None = None, tcont_context: float | torch.Tensor | None = None, tcont_text: float | torch.Tensor | None = None, tcont_state: float | torch.Tensor | None = None) -> BatchFeature:
         start_time = time.perf_counter()
 
         # Tracking time taken on GPU for various operations.
@@ -1156,6 +1188,19 @@ class WANPolicyHead(ActionHead):
             )
             self.context_generator = torch.Generator(noise_obs.device).manual_seed(self.seed + 1)  # not the initial-noise seed
 
+        # Language (tmrl): the positive prompt gets level tcont_text at the call that starts the KV cache and keeps it
+        # for the episode (the DiT reads the context at every call). Every CFG rank draws the noise, which keeps the
+        # generator in step; the negative prompt stays clean.
+        if self.current_start_frame == 0:
+            self.prompt_embs = prompt_embs
+            if tcont_text is not None:
+                tcont = torch.as_tensor(tcont_text, dtype=torch.float32, device=noise_obs.device).expand(batch_size)
+                noised = self.noised_context(prompt_embs[0], tcont, self.config.context_noise_text_rms, self.context_generator)
+                if self.ip_rank == 0:
+                    self.prompt_embs = [noised] + prompt_embs[1:]
+        if tcont_text is not None:
+            prompt_embs = self.prompt_embs
+
         # Noised context (tmrl): observed latents written to the KV cache get level tcont_context in [0, 1] (float or [B])
         # as in training, given to the DiT as their timestep. The first-frame y (its first latent, or all with
         # context_noise_y_tail) and CLIP feature get the level of the call that starts the KV cache. The seeded generator
@@ -1177,6 +1222,12 @@ class WANPolicyHead(ActionHead):
                 noise = torch.randn(clip.shape, generator=self.context_generator, device=noise_obs.device, dtype=clip.dtype)
                 self.clip_feas = ((1 - s[:, 0, 0]) * clip + s[:, 0, 0] * noise).to(clip.dtype)
             context_timestep = sigma[:, None] * self.scheduler.num_train_timesteps
+
+        # State (tmrl): the state of this call gets level tcont_state on its real dims (state_mask)
+        if tcont_state is not None:
+            tcont = torch.as_tensor(tcont_state, dtype=torch.float32, device=noise_obs.device).expand(batch_size)
+            noised = self.noised_context(state_features, tcont, generator=self.context_generator)
+            state_features = torch.where(data["state_mask"], noised, state_features)
 
         assert self.kv_cache1 is not None
         assert self.kv_cache_neg is not None

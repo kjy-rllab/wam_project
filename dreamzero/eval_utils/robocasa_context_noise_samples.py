@@ -1,7 +1,8 @@
 """Video and action samples of a RoboCasa context-noise checkpoint at fixed context noise levels (tcont_context), to
 see whether noising the context interpolates between the prediction given the context (level 0) and the marginal
 (level 1: the observed frames are pure noise, only the instruction and the robot state stay), and whether the videos in
-between are still plausible videos.
+between are still plausible videos. --modalities gives the levels to the instruction embedding (text) and the robot
+state (state) instead of or besides the video context; the inputs not listed stay clean.
 
 Contexts come from the heldout set of robocasa_val_loss.py (shards of trained tasks that no data worker visited): from
 each heldout shard, trajectories with a random step i whose instruction holds up to step i+48. A context is played as
@@ -61,12 +62,14 @@ class Args:
         default_factory=lambda: [0.0, 1 / 32, 1 / 16, 1 / 8, 3 / 16, 1 / 4, 3 / 8, 1 / 2, 1.0])
     seeds: int = 5  # samples per context and level
     video_seeds: int = 2  # seeds whose videos are saved
+    # Inputs that get the levels (the others stay clean): the video context, the instruction embedding, the robot state
+    modalities: list[Literal["video", "text", "state"]] = dataclasses.field(default_factory=lambda: ["video"])
     tasks: int = 24  # heldout tasks, half atomic and half composite
     contexts_per_task: int = 2  # trajectories of the task's heldout shard
     seed: int = 0
     # Latents of y after the first (the encoded zero frames): "own" as in training, or "swap" for another context's
     y_tail: Literal["own", "swap"] = "own"
-    output_dir: str | None = None  # default: <run dir>/context_noise_samples/<checkpoint>[_y_tail_swap]
+    output_dir: str | None = None  # default: <run dir>/context_noise_samples/<checkpoint>[_y_tail_swap][_<modalities>]
 
 
 def main(args: Args):
@@ -77,8 +80,8 @@ def main(args: Args):
     rank, world = dist.get_rank(), dist.get_world_size()
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     model_dir = Path(args.model_path)
-    output_dir = Path(args.output_dir or model_dir.parent / "context_noise_samples" /
-                      (model_dir.name + ("" if args.y_tail == "own" else f"_y_tail_{args.y_tail}")))
+    suffix = ("" if args.y_tail == "own" else f"_y_tail_{args.y_tail}") + ("" if args.modalities == ["video"] else "_" + "_".join(args.modalities))
+    output_dir = Path(args.output_dir or model_dir.parent / "context_noise_samples" / (model_dir.name + suffix))
     shards_dir = Path(args.shards_from or args.model_path)
     cfg = OmegaConf.load(shards_dir / "experiment_cfg" / "conf.yaml")
     global_step = json.loads((shards_dir / "trainer_state.json").read_text())["global_step"]
@@ -106,7 +109,8 @@ def main(args: Args):
                 contexts.append((d, int(trajectory), i, language.pop()))
                 found += 1
     if rank == 0:
-        print(f"{len(contexts)} contexts x {len(args.levels)} levels x {args.seeds} seeds, y tail {args.y_tail}", flush=True)
+        print(f"{len(contexts)} contexts x {len(args.levels)} levels x {args.seeds} seeds, y tail {args.y_tail}, "
+              f"noised {' '.join(args.modalities)}", flush=True)
 
     # As GrootSimPolicy loads it, one rank at a time (see robocasa_val_loss.py)
     for r in range(world):
@@ -172,12 +176,19 @@ def main(args: Args):
         language_key = keys.language.modality_keys[0]
         calls = [obs | {language_key: language} for obs in calls]
 
-        # GT frames as the model sees them (eval transform: center crop, resize, grid) and their VAE latents
-        images = torch.as_tensor(policy.eval_transform(unsqueeze_dict_values(calls[0] | video))["images"])
+        # GT frames as the model sees them (eval transform: center crop, resize, grid) and their VAE latents; the
+        # instruction embedding and the normalized states of the calls, the spaces the text and state noise goes to
+        transformed = policy.eval_transform(unsqueeze_dict_values(calls[0] | video))
+        images = torch.as_tensor(transformed["images"])
+        text_mask = torch.as_tensor(transformed["text_attention_mask"]).cuda()
+        text_emb = head.encode_prompt(torch.as_tensor(transformed["text"]).cuda(), text_mask)[0, :int(text_mask.sum())]
+        states = [policy.eval_transform(unsqueeze_dict_values(obs)) for obs in calls]
+        states = np.stack([np.asarray(s["state"])[0][np.asarray(s["state_mask"])[0]] for s in states])
         gt_video = (images.cuda().permute(0, 4, 1, 2, 3).float() / 127.5 - 1).to(torch.bfloat16)
         gt_latents = head.vae.encode(gt_video)
         gt, recon = views(gt_video[0]), views(head.vae.decode(gt_latents)[0])
         out = {"clip_gt": embed(gt), "clip_recon": embed(recon), "actions_gt": gt_actions,
+               "text_emb": text_emb.half().cpu().numpy(), "state": states,
                "mae_copy": (gt[[0] * (observed - 1) + [observed - 1] * (observed - 1)] - gt[1:]).abs().mean((2, 3, 4)).cpu().numpy()}
         out |= {f"{k}_gt": v for k, v in stats(gt[1:], gt[:-1], gt[1:]).items() if k in ("sharpness", "motion_low", "flow")}
         out |= {f"{k}_recon": v for k, v in stats(recon[1:], recon[:-1], gt[1:]).items()}
@@ -198,7 +209,9 @@ def main(args: Args):
         for seed in range(args.seeds):
             for level in args.levels:
                 head.seed = seed  # initial noise of the video and the actions; the context noise uses seed + 1
-                results = [policy.lazy_joint_forward_causal(Batch(obs=dict(obs)), tcont_context=level) for obs in calls]
+                at = {m: level if m in args.modalities else None for m in ("video", "text", "state")}
+                results = [policy.lazy_joint_forward_causal(Batch(obs=dict(obs)), tcont_context=at["video"], tcont_text=at["text"],
+                                                            tcont_state=at["state"]) for obs in calls]
                 first, second = (video_pred[:, :, -block:] for _, video_pred in results)
                 pred = views(torch.cat([head.vae.decode(torch.cat([gt_latents[:, :, :1], first], 2))[0, :, 1:],
                                         head.vae.decode(torch.cat([gt_latents[:, :, :1 + block], second], 2))[0, :, 1 + 4 * block:]], 1))
@@ -226,7 +239,8 @@ def main(args: Args):
                     cv2.putText(frame, label, (4, r * gt.shape[-2] + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
             iio.imwrite(output_dir / "videos" / f"{name}_seed{seed}.mp4", grid, plugin="pyav", fps=20 / stride, codec="libx264")
         np.savez(output_dir / "samples" / f"{name}.npz", **out, task=task[d], trajectory=trajectory, step=i, language=language,
-                 y_tail=args.y_tail, levels=np.array(args.levels), steps=steps[1:], views=np.array([k.split(".", 1)[1] for k in keys.video.modality_keys]))
+                 y_tail=args.y_tail, levels=np.array(args.levels), modalities=np.array(args.modalities), steps=steps[1:],
+                 views=np.array([k.split(".", 1)[1] for k in keys.video.modality_keys]))
         print(f"Rank {rank}: context {c + 1}/{len(contexts)} {name} done in {time.time() - start:.0f} s", flush=True)
     dist.barrier()
 

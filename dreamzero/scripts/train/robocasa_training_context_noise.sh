@@ -19,6 +19,8 @@ ROBOCASA_DATA_ROOT=${ROBOCASA_DATA_ROOT:?Set ROBOCASA_DATA_ROOT to a glob over t
 OUTPUT_DIR=${OUTPUT_DIR:-"$DREAMZERO_ROOT/checkpoints/dreamzero_robocasa_context_noise"}
 CONTEXT_NOISE=${CONTEXT_NOISE:-true}
 CONTEXT_NOISE_Y_TAIL=${CONTEXT_NOISE_Y_TAIL:-true}  # also the encoded zero frames of y (false: as runs before this option)
+CONTEXT_NOISE_TEXT=${CONTEXT_NOISE_TEXT:-false}  # the instruction embedding too, with its own level per sample
+CONTEXT_NOISE_STATE=${CONTEXT_NOISE_STATE:-false}  # the robot state too, with its own level per sample
 REPORT_TO=${REPORT_TO:-none}
 
 NNODES=${NNODES:-1}
@@ -81,4 +83,6 @@ python -m torch.distributed.run \
     tokenizer_path=$TOKENIZER_DIR \
     ++action_head_cfg.config.context_noise=$CONTEXT_NOISE \
     ++action_head_cfg.config.context_noise_y_tail=$CONTEXT_NOISE_Y_TAIL \
+    ++action_head_cfg.config.context_noise_text=$CONTEXT_NOISE_TEXT \
+    ++action_head_cfg.config.context_noise_state=$CONTEXT_NOISE_STATE \
     "$@"

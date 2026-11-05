@@ -8,10 +8,15 @@ WAM 프로젝트 작업 저장소입니다.
 
 [tmrl](https://github.com/matthewh6/tmrl)처럼 context에 노이즈를 준 채로 WAM을 학습합니다 (`action_head_cfg.config.context_noise=true`).
 
-- 노이즈 대상: teacher forcing의 깨끗한 영상 latent 흐름, `y`의 첫 프레임 latent(`context_noise_y_tail=true`면 `y`의 latent 전체), 첫 프레임 CLIP 특징. 언어와 로봇 상태는 깨끗하게 둡니다.
+- 노이즈 대상: teacher forcing의 깨끗한 영상 latent 흐름, `y`의 첫 프레임 latent(`context_noise_y_tail=true`면 `y`의 latent 전체), 첫 프레임 CLIP 특징. 언어와 로봇 상태는 기본으로 깨끗하게 둡니다 (아래 `context_noise_text`, `context_noise_state`).
 - 샘플마다 수준 하나: `tcont ~ U[0,1)`, `σ = 5·tcont / (1 + 4·tcont)` (모델 스케줄의 shift 5), `x̃ = (1-σ)·x + σ·ε`. CLIP 특징은 RMS 정규화 후 같은 σ로 섞습니다.
 - 모델에는 깨끗한 토큰의 timestep으로 수준을 알려 줍니다 (`aug_t = 1000·σ`). `tcont=0`이면 원래 모델과 같습니다.
 - 코드: `dreamzero/groot/vla/model/dreamzero/action_head/wan_flow_matching_action_tf.py` (`WANPolicyHead.forward`)
+- 언어와 로봇 상태 (`context_noise_text=true`, `context_noise_state=true`; 학습 스크립트의 `CONTEXT_NOISE_TEXT`, `CONTEXT_NOISE_STATE`): 샘플마다 입력별로 수준 `tcont ~ U[0,1)`을 따로 뽑아 같은 식으로 섞습니다. 수준은 모델에 알려주지 않습니다 (tmrl의 policy처럼 입력에서 읽습니다).
+  - 언어: T5 임베딩(512 토큰 × 4096)의 모든 위치에 RMS 0.085인 노이즈를 줍니다 (`context_noise_text_rms`, RoboCasa 프롬프트 토큰의 RMS 0.0847). 패딩 위치(0)도 노이즈로 바꿔서 토큰 수가 새지 않게 합니다. CFG의 negative prompt는 깨끗하게 둡니다.
+  - 상태: q99 정규화된 실제 차원(`state_mask`)에 N(0,1) 노이즈를 줍니다 (정규화된 상태의 RMS는 약 0.75).
+  - action은 입력이 아니라 flow matching의 예측 대상이라 노이즈 대상이 아닙니다.
+  - 정보가 사라지는 수준은 입력마다 다릅니다. 이상적 관찰자가 두 context를 구분하는 척도 Δ = (1−σ)‖c−c′‖/(σ·노이즈 표준편차)에서, 프롬프트 사이 거리는 노이즈 표준편차의 약 840배(video latent는 약 100배, 상태는 약 2배)입니다. 그래서 언어 정보는 σ ≈ 0.99(tcont ≈ 0.95) 근처에서야, 상태 정보는 σ ≈ 0.6(tcont ≈ 0.25)에서 사라지므로, sweep의 수준을 입력에 맞춥니다.
 - `y`의 뒤 latent: `y`는 `[첫 프레임, 0 프레임들]`의 VAE latent입니다. causal VAE 인코더가 뒤 latent(특히 1, 2번째)에 첫 프레임 정보를 담습니다. 노이즈를 첫 latent에만 주고 학습한 `dreamzero_robocasa_context_noise`는 그 latent에서 장면을 읽어서, `tcont=1`에서도 장면이 그대로 남습니다 (아래 "예측 분포"). `context_noise_y_tail=true`면 뒤 latent에도 같은 σ로 노이즈를 줍니다. 학습 스크립트는 이것이 기본이고, 이 옵션이 없던 checkpoint는 전처럼 첫 latent에만 줍니다. checkpoint-25000에서 이 옵션으로 5000 step 이어서 학습한 `dreamzero_robocasa_context_noise_y_tail`은 `tcont=1`에서 장면을 모릅니다.
 
 ## RoboCasa365 데이터
@@ -34,6 +39,12 @@ sbatch scripts/train/robocasa_training_context_noise.sbatch
 - 학습이 시작 후 15분 안에 멈추면 같은 노드에서 다시 시작합니다 (최대 3번). 모델을 GPU로 옮기다 GPU 메모리 부족으로 실패한 작업이 2개 있었습니다. GH200은 CPU 메모리가 차면 GPU 메모리를 CPU 메모리로 쓰는데, 그때 약 54GB가 그렇게 쓰이고 있었습니다.
 - 한 번 시작한 학습은 노드 수를 바꾸지 않습니다 (ZeRO 옵티마이저 상태가 GPU 수대로 나뉘어 저장됨).
 - 비교용 기준 모델: `CONTEXT_NOISE=false`. `CONTEXT_NOISE_Y_TAIL=false`면 `y`의 첫 latent에만 노이즈를 줍니다 (이 옵션 전의 run).
+- 언어와 상태까지: `CONTEXT_NOISE_TEXT=true CONTEXT_NOISE_STATE=true`. `dreamzero_robocasa_context_noise_all`은 `dreamzero_robocasa_context_noise_y_tail`의 checkpoint-5000에서 이 두 옵션으로 5000 step 이어서 학습한 run입니다.
+
+  ```bash
+  OUTPUT_DIR=$WORK/runs/dreamzero_robocasa_context_noise_all MAX_STEPS=5000 CHAIN_JOBS=1 CONTEXT_NOISE_TEXT=true CONTEXT_NOISE_STATE=true \
+    sbatch scripts/train/robocasa_training_context_noise.sbatch pretrained_model_path=$WORK/runs/dreamzero_robocasa_context_noise_y_tail/checkpoint-5000
+  ```
 - 다른 run의 checkpoint 가중치로 새 run을 시작할 수 있습니다. optimizer와 LR 스케줄(warmup 5%, cosine)은 새로 시작합니다.
 
   ```bash
@@ -51,6 +62,7 @@ result_batch, video_pred = policy.lazy_joint_forward_causal(batch, tcont_context
 ```
 
 - `tcont_context`: 0~1 실수, 또는 샘플마다 다른 값이면 `[B]` 텐서. `None`(기본)이면 원래 추론과 같습니다.
+- `tcont_text`, `tcont_state`: 같은 형식의 언어·상태 수준 (`None`이면 깨끗). 언어 노이즈는 KV cache를 시작하는 호출에서 positive prompt에 한 번 주고 에피소드 동안 유지하며, 상태 노이즈는 호출마다 그 호출의 상태에 줍니다. 노이즈는 모두 아래의 seed 고정 generator에서 뽑습니다.
 - 학습과 같은 식으로 KV cache에 넣는 관측 latent를 노이즈하고, 그 토큰의 timestep을 `1000·σ`로 줍니다.
 - 첫 프레임 `y`(첫 latent, `context_noise_y_tail`이면 전체)와 CLIP 특징은 KV cache를 새로 시작하는 호출의 수준으로 한 번 노이즈합니다. 학습처럼 에피소드마다 수준 하나를 쓰는 게 기본이고, 호출마다 바꾸면 새로 들어오는 관측 프레임에만 적용됩니다.
 - 노이즈는 KV cache를 시작할 때 seed를 고정한 generator에서 뽑습니다. 그래서 같은 입력이면 결과가 같고, GPU 2개로 CFG를 나눠 돌릴 때도 두 GPU가 같은 노이즈를 씁니다.
@@ -128,13 +140,16 @@ python eval_utils/robocasa_sim_eval.py --servers 0=tcp://127.0.0.1:5555 0.125=tc
 sbatch scripts/inference/robocasa_context_noise_samples.sbatch <checkpoint> --resume-steps 0 9000 18000
 # y의 첫 latent 뒤 latent들을 다른 context의 것으로 바꿔서
 sbatch --time=02:00:00 scripts/inference/robocasa_context_noise_samples.sbatch <checkpoint> --resume-steps 0 9000 18000 --y-tail swap --seeds 2
+# 수준을 영상 context 대신 언어(text)나 상태(state)에, 또는 셋 모두에 (나머지 입력은 깨끗)
+sbatch scripts/inference/robocasa_context_noise_samples.sbatch <checkpoint> --resume-steps 0 --shards-from <원래 checkpoint> --modalities text --levels 0 0.5 0.75 0.875 0.9375 0.96875 0.984375 1
 ```
 
 - `eval_utils/robocasa_context_noise_samples.py`는 수준마다 비디오와 action을 여러 seed로 뽑아, context 노이즈가 context 조건부 분포(수준 0)와 marginal(수준 1) 사이를 잇는지, 그 사이의 비디오가 그럴듯한지 봅니다.
 - context: 데이터 loss의 heldout shard에서 task 24개 × trajectory 2개 = 48개. 임의의 step i부터 48 step 동안 지시문이 같은 곳을 고릅니다.
 - 시뮬레이션 서버처럼 두 번 호출합니다. 첫 호출은 step i 프레임 1장, 둘째 호출은 step i … i+24 프레임 9장을 받고, 각각 action 24개와 프레임 8장(step i+3 … i+48)을 예측합니다. 예측 latent는 그 호출이 받은 GT latent 뒤에 붙여 디코딩합니다.
 - 기본값: 수준 `0, 1/32, 1/16, 1/8, 3/16, 1/4, 3/8, 1/2, 1`, seed 5개 (`--levels`, `--seeds`로 바꿉니다). 같은 seed는 모든 수준과 context에서 같은 초기 노이즈와 context 노이즈를 씁니다.
-- 결과 (`<run>/context_noise_samples/<checkpoint>[_y_tail_swap]/`): `samples/<context>.npz` (예측·GT action, 예측·GT·VAE 복원 프레임의 CLIP 특징과 오차·선명도·움직임), `latents/<context>.pt` (예측 video latent), `videos/<context>_seed<k>.mp4` (앞 `--video-seeds`개 seed, 기본 2; 행은 GT와 수준들, 열은 왼쪽·오른쪽·손목 카메라).
+- 결과 (`<run>/context_noise_samples/<checkpoint>[_y_tail_swap][_<modalities>]/`): `samples/<context>.npz` (예측·GT action, 예측·GT·VAE 복원 프레임의 CLIP 특징과 오차·선명도·움직임, 지시문의 T5 임베딩 `text_emb`와 두 호출의 정규화된 상태 `state`), `latents/<context>.pt` (예측 video latent), `videos/<context>_seed<k>.mp4` (앞 `--video-seeds`개 seed, 기본 2; 행은 GT와 수준들, 열은 왼쪽·오른쪽·손목 카메라).
+- `--modalities`: 수준을 받는 입력 (`video`, `text`, `state` 중 여러 개, 기본 `video`). 나머지 입력은 깨끗합니다. 입력마다 정보가 사라지는 σ가 다르므로 (위 "Noised context") `--levels`를 맞춥니다.
 - `--y-tail swap`: `y`의 첫 latent 뒤 latent들을 context 목록에서 절반 떨어진 context(다른 task)의 첫 프레임으로 만든 것으로 바꿉니다. latent마다 바뀐 비율은 `tail_change`로 저장됩니다.
 - 끝난 context는 건너뛰므로 같은 명령을 다시 내면 이어서 합니다.
 - 시간 (GH200 4개): 준비 약 15분, 그 뒤 GPU마다 context 12개를 context당 약 6분(첫 context는 compile 포함 약 9분)씩 돌려 전체 약 1시간 30분. `--y-tail swap --seeds 2`는 context당 약 3분, 전체 약 50분. 수준 8개 × seed 12개는 context당 약 13분, 전체 약 3시간이라 `--time=05:00:00`을 줍니다.
