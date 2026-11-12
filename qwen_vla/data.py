@@ -29,10 +29,10 @@ EMBODIMENTS = {
     'robocasa': ('robocasa/v1.0/pretrain/*/*/*/lerobot', ['robot0_agentview_left', 'robot0_agentview_right', 'robot0_eye_in_hand'],
                  ['observation.state'], ['action'], 1),  # PandaOmron, 20 Hz, delta end effector + base
     'aloha': ('real/lerobot__aloha_*', ['cam_high', 'cam_left_wrist', 'cam_right_wrist'], ['observation.state'], ['action'], 3),  # 50 Hz, joints
-    'agilex': ('real/BAAI-DataCube__robomind_*agilex_3rgb*', ['camera_front', 'camera_left_wrist', 'camera_right_wrist'],
+    'agilex': ('real/BAAI-DataCube__*agilex*', ['camera_front', 'camera_left_wrist', 'camera_right_wrist'],
                ['observation.states.joint_position_left', 'observation.states.joint_position_right'],
                ['actions.joint_position_left', 'actions.joint_position_right'], 2),  # Cobot Magic, 30 Hz, joints
-    'fr3_dual': ('real/BAAI-DataCube__robomind_*franka_fr3_dual*', ['camera_front', 'camera_left', 'camera_right'],
+    'fr3_dual': ('real/BAAI-DataCube__*fr3_dual*', ['camera_front', 'camera_left', 'camera_right'],
                  ['observation.states.joint_position'], ['actions.joint_position'], 2),  # two Franka FR3, 30 Hz, joints
     'ur5_berkeley': ('real/lerobot__berkeley_autolab_ur5', ['image', 'hand_image'], ['observation.state'], ['action'], 1),  # 5 Hz, delta end effector
     'ur5_table30': ('real/Traly__RoboChallenge-lerobot/*', ['global_image', 'wrist_image'], ['observation.state'], ['action'], 3),  # 30 Hz, end-effector pose
