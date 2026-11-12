@@ -1,7 +1,7 @@
 """Robot demonstrations in LeRobot format (v2.1 and v3.0) as one stream of (images, instruction, state, action chunk).
 
 An embodiment is a group of datasets with the same cameras, state and action. `python -m qwen_vla.data <data root>
-<index dir> [embodiment ...]` reads their tables once into <index dir>/<embodiment>.npz: every frame's state and action,
+<index dir> [embodiment ...]` reads their tables once into <index dir>/<embodiment>/: every frame's state and action,
 the episodes (first frame, instruction, video file and start time per camera) and the 1st and 99th percentile of each
 state and action dimension, which scale them to [-1, 1]. `Mixture` then samples frames across embodiments and decodes
 only the images it needs.
@@ -87,8 +87,11 @@ def main() -> None:
         lengths = np.concatenate([p['lengths'] for p in parts])
         files = sorted({f for p in parts for row in p['files'] for f in row})
         lookup = {f: i for i, f in enumerate(files)}
+        (out / name).mkdir(exist_ok=True)
+        np.save(out / name / 'state.npy', state)
+        np.save(out / name / 'action.npy', action)
         np.savez(
-            out / f'{name}.npz', state=state, action=action, first=np.concatenate([[0], np.cumsum(lengths)]),
+            out / name / 'meta.npz', first=np.concatenate([[0], np.cumsum(lengths)]),
             tasks=np.array([t for p in parts for t in p['tasks']]), files=np.array(files),
             video=np.array([[lookup[f] for f in row] for p in parts for row in p['files']]),
             start=np.concatenate([p['starts'] for p in parts]), fps=np.concatenate([np.full(len(p['lengths']), p['fps']) for p in parts]),
@@ -105,7 +108,9 @@ class Mixture(torch.utils.data.IterableDataset):
     def __init__(self, index_dir: Path, weights: dict[str, float], seed: int = 0, split: str = 'train', image_area: int = 256 * 256) -> None:
         self.names = list(weights)
         self.weights = np.array([weights[n] for n in self.names], dtype=np.float64) / sum(weights.values())
-        self.index = {n: dict(np.load(Path(index_dir) / f'{n}.npz')) for n in self.names}
+        # the per-frame tables stay on disk (memory-mapped), shared by the data workers
+        self.index = {n: dict(np.load(Path(index_dir) / n / 'meta.npz')) | {k: np.load(Path(index_dir) / n / f'{k}.npy', mmap_mode='r') for k in ('state', 'action')}
+                      for n in self.names}
         self.seed, self.split, self.image_area = seed, split, image_area
 
     def frame(self, path: str, time: float) -> Image.Image:

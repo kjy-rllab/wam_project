@@ -66,7 +66,7 @@ def main() -> None:
 
     # Embodiments: sizes from the index, padded to the largest
     names = list(args.weights)
-    ranges = {n: {k: np.load(args.index / f'{n}.npz')[k].tolist() for k in ('state_range', 'action_range')} for n in names}
+    ranges = {n: {k: np.load(args.index / n / 'meta.npz')[k].tolist() for k in ('state_range', 'action_range')} for n in names}
     sizes = {n: (len(r['state_range'][0]), len(r['action_range'][0])) for n, r in ranges.items()}
     state_dim, action_dim = (max(s[i] for s in sizes.values()) for i in (0, 1))
     processor = vlm.AutoProcessor.from_pretrained(args.vlm)
