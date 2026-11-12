@@ -2,9 +2,10 @@
 
     torchrun --nproc_per_node=4 -m qwen_vla.train --mode frozen --vlm <Qwen dir> --index <index dir> --output <run dir>
 
---mode frozen and adapter keep a frozen bf16 copy of the VLM on every GPU. --mode full trains the VLM as well, sharded
-over all GPUs (FSDP) with float32 weights; it stays near the pretrained weights through a small learning rate
-(--vlm-lr-scale) and a pull that removes the fraction --pull of its drift every step. The run writes log.jsonl
+--mode frozen and adapter keep a frozen bf16 copy of the VLM on every GPU. --mode full trains the VLM as well: its
+float32 weights are sharded over all GPUs (FSDP) and gathered in bf16 for every step; it stays near the pretrained
+weights through a small learning rate (--vlm-lr-scale) and a pull that removes the fraction --pull of its drift every
+step. The run writes log.jsonl
 (training loss, validation flow loss and open-loop action error per embodiment, VLM drift) and checkpoints of what was
 trained.
 """
@@ -19,7 +20,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from safetensors.torch import save_file
-from torch.distributed.fsdp import fully_shard
+from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
@@ -37,6 +38,7 @@ def main() -> None:
     parser.add_argument('--tap', type=int, required=True, help='VLM layer whose output the action expert reads')
     parser.add_argument('--weights', type=json.loads, required=True, help='sampling weight per embodiment, JSON')
     parser.add_argument('--expert-layers', type=int, default=16)
+    parser.add_argument('--image-size', type=int, default=256, help='images are resized to about this many pixels squared')
     parser.add_argument('--steps', type=int, default=20000)
     parser.add_argument('--batch', type=int, default=16, help='per GPU')
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -82,7 +84,7 @@ def main() -> None:
         return batch
 
     loader = lambda split, seed, workers: iter(DataLoader(
-        Mixture(args.index, args.weights, seed=seed, split=split), batch_size=args.batch, num_workers=workers, collate_fn=collate, prefetch_factor=4))
+        Mixture(args.index, args.weights, seed=seed, split=split, image_area=args.image_size**2), batch_size=args.batch, num_workers=workers, collate_fn=collate, prefetch_factor=4))
     held_out = [batch for batch, _ in zip(loader('val', 12345 + rank, 2), range(args.eval_batches))]  # the same batches at every evaluation
     batches = loader('train', args.seed * 1000 + rank, args.workers)
     to_device = lambda batch: {k: v.to(device) for k, v in batch.items()}
@@ -92,10 +94,13 @@ def main() -> None:
     model = VLA(backbone, args.tap, state_dim, action_dim, len(names), mode=args.mode, num_layers=args.expert_layers).to(device)
     del backbone.lm_head
     if args.mode == 'full':
-        # Float32 weights sharded over all GPUs; each block, the rest of the VLM and the expert gather theirs when called
+        # Float32 weights sharded over all GPUs. Each block and the rest of the VLM gather theirs in bf16 when first
+        # called and keep them until the backward pass; gradients are reduced in bf16 too
         model.vlm.float()
-        for module in list(model.vlm.visual.blocks) + list(model.vlm.language_model.layers) + [model.vlm, model.expert]:
-            fully_shard(module)
+        policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16)
+        for module in list(model.vlm.visual.blocks) + list(model.vlm.language_model.layers) + [model.vlm]:
+            fully_shard(module, mp_policy=policy, reshard_after_forward=False)
+        fully_shard(model.expert)
         step_model = model
     else:
         model.vlm.eval()
@@ -147,7 +152,7 @@ def main() -> None:
                 state = {k: v.to('cpu', torch.bfloat16 if name == 'vlm' else v.dtype).contiguous() for k, v in full(module).items()}  # collective under FSDP
                 rank == 0 and save_file(state, folder / f'{name}.safetensors')
         rank == 0 and (folder / 'config.json').write_text(json.dumps({
-            'mode': args.mode, 'vlm': args.vlm, 'tap': args.tap, 'expert_layers': args.expert_layers, 'embodiments': names, 'state_dim': state_dim, 'action_dim': action_dim, 'ranges': ranges}))
+            'mode': args.mode, 'vlm': args.vlm, 'tap': args.tap, 'expert_layers': args.expert_layers, 'image_size': args.image_size, 'embodiments': names, 'state_dim': state_dim, 'action_dim': action_dim, 'ranges': ranges}))
 
     model.vlm.train(args.mode == 'full')
     model.expert.train()
@@ -172,7 +177,8 @@ def main() -> None:
         busy += time.time() - start
 
         if (step + 1) % 50 == 0 or step == 0:
-            record = {'step': step + 1, **info, 'lr': scheduler.get_last_lr()[0], 'seconds_per_step': busy / (50 if step else 1), 'data_wait': wait / (50 if step else 1)}
+            record = {'step': step + 1, **info, 'lr': scheduler.get_last_lr()[0], 'seconds_per_step': busy / (50 if step else 1), 'data_wait': wait / (50 if step else 1),
+                      'gpu_gb': torch.cuda.max_memory_allocated(device) / 2**30}
             wait = busy = 0.0
             if args.mode == 'full' and (step + 1) % 500 == 0:
                 moved = torch.stack([torch.stack([(p.to_local() - a).pow(2).sum(), a.pow(2).sum()]) for p, a in zip(backbone_params, anchors)]).sum(0)

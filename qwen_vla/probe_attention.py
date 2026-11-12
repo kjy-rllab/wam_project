@@ -4,16 +4,18 @@ locate: one camera image and 'Locate the {phrase} ...' for a visible thing. poli
 task instruction, as a policy would see them. vlm.trace gives, for every layer and head, how much each image token adds
 to the residual stream at three query tokens: the last token of the phrase (locate) or of the instruction (policy),
 the last token of the prompt, and (locate) the token that writes the first box coordinate, after the reply is started
-with BOX. Each map is scored against three masks on the image-token grid: AUROC of the mask's cells against cells off
-it, and whether the strongest cell lies on it.
+with BOX. Each map is scored against masks on the image-token grid: AUROC of the mask's cells against cells off it,
+within each image (averaged over the images that show the mask, so a preference for one camera does not count), and
+whether the strongest cell of all images lies on it.
 
     locate masks: target (asked for), control (another thing in view, not asked for), gripper (not asked for)
-    policy masks: object (the task's object), fixture (the fixtures the task refers to), gripper
+    policy masks: object (the objects the task places), distractor (the other objects), fixture (the fixtures the
+                  task refers to), gripper
 
 Also the share of each layer's write that comes from image tokens. Writes attention_<mode>_<size>_<shard>.npz with
 auroc and point [examples, masks, queries, layers, heads + 1] (last head index: all heads together), image_share
 [examples, queries, layers], x1 (locate: the first coordinate the model writes after BOX and the true one) and the maps
-of the first --keep examples.
+of the first --keep examples [layers, queries, heads + 1, cells].
 
     python -m qwen_vla.probe_attention --model <checkpoint> --scenes <scenes dir> --output <dir> --mode locate
 """
@@ -30,7 +32,7 @@ from qwen_vla import scenes, vlm
 from qwen_vla.probe_behavior import GROUND
 
 BOX = '```json\n[\n\t{"bbox_2d": ['  # how Qwen starts a grounding reply
-MASKS = {'locate': ['target', 'control', 'gripper'], 'policy': ['object', 'fixture', 'gripper']}
+MASKS = {'locate': ['target', 'control', 'gripper'], 'policy': ['object', 'distractor', 'fixture', 'gripper']}
 
 
 def main() -> None:
@@ -60,9 +62,10 @@ def main() -> None:
         frames = [Image.fromarray(f) for f in scene['rgb' if size == 768 else 'rgb_256']]
         if args.mode == 'policy':
             fixture = np.isin(scene['mask'], [names.index(n) for n in scene['fixture_refs'].values() if n in names])
-            obj = scene['mask'] == (names.index('obj') if 'obj' in names else -1)
+            objects = [i for i, e in enumerate(scene['entities']) if e['kind'] == 'object']
+            distractor = np.isin(scene['mask'], [i for i in objects if names[i].startswith('distr')])  # RoboCasa's name for them
             examples.append({'scene': scene['path'], 'images': frames, 'text': scene['lang'], 'content': scene['lang'],
-                             'masks': [obj, fixture, gripper]})
+                             'masks': [np.isin(scene['mask'], objects) & ~distractor, distractor, fixture, gripper]})
             continue
         for camera in range(3):
             things = scenes.targets(scene, camera)
@@ -77,7 +80,7 @@ def main() -> None:
                 })
 
     n, kept = len(examples), {}
-    auroc = np.full((n, 3, 3, len(layers), heads + 1), np.nan, dtype=np.float32)
+    auroc = np.full((n, len(MASKS[args.mode]), 3, len(layers), heads + 1), np.nan, dtype=np.float32)
     point = np.full_like(auroc, np.nan)
     image_share = np.full((n, 3, len(layers)), np.nan, dtype=np.float32)
     x1 = np.full((n, 2), np.nan, dtype=np.float32)
@@ -86,6 +89,7 @@ def main() -> None:
         ids = inputs['input_ids'][0]
         grids = vlm.image_tokens(model, inputs)
         cells = torch.cat([g.flatten() for g in grids])
+        image = torch.cat([torch.full((g.numel(),), i, device=device) for i, g in enumerate(grids)])
         # Query tokens: the last token of the content (it follows the last image), the last prompt token, the box token
         content = int(grids[-1][-1, -1]) + 1 + len(tokenizer(example['content'], add_special_tokens=False).input_ids)
         queries = [content, len(ids) - 1]
@@ -110,20 +114,25 @@ def main() -> None:
             image_share[e, :q, l] = (row['norm'][:, cells].sum(-1) / row['norm'].sum(-1)).cpu().numpy()
             h = maps.shape[1] - 1
             for m, c in enumerate(cover):
-                if c.max() == 0:
+                on, off = (c >= min(0.2, float(c.max()))) & (c > 0), c == 0
+                scores = []
+                for i in range(len(grids)):
+                    a, b = on & (image == i), off & (image == i)
+                    if a.any() and b.any():
+                        ranks = maps[:, :, a | b].argsort(-1).argsort(-1).float() + 1
+                        scores.append((ranks[:, :, a[a | b]].mean(-1) - (a.sum() + 1) / 2) / b.sum())
+                if not scores:
                     continue
-                on, off = c >= min(0.2, float(c.max())), c == 0
-                ranks = maps[:, :, on | off].argsort(-1).argsort(-1).float() + 1
-                on_ranks = ranks[:, :, on[on | off]]
-                score = (on_ranks.mean(-1) - (on.sum() + 1) / 2) / off.sum()
-                hit = (c[maps.argmax(-1)] > 0).float()
+                score, hit = torch.stack(scores).mean(0), (c[maps.argmax(-1)] > 0).float()
                 for values, array in ((score, auroc), (hit, point)):
                     array[e, m, :q, l, :h] = values[:, :h].cpu().numpy()
                     array[e, m, :q, l, -1] = values[:, h].cpu().numpy()
-            if e < args.keep:
-                kept.setdefault(f'maps_{e}', []).append(maps.half().cpu().numpy())
+            if e < args.keep:  # layers differ in heads: zeros between a layer's heads and the all-heads map
+                padded = torch.zeros(q, heads + 1, len(cells), device=device)
+                padded[:, :h], padded[:, -1] = maps[:, :h], maps[:, h]
+                kept.setdefault(f'maps_{e}', []).append(padded.half().cpu().numpy())
         if e < args.keep:
-            kept[f'maps_{e}'] = np.stack([np.pad(m, ((0, 0), (0, heads + 1 - m.shape[1]), (0, 0))) for m in kept[f'maps_{e}']])
+            kept[f'maps_{e}'] = np.stack(kept[f'maps_{e}'])
             kept[f'cover_{e}'] = torch.stack(cover).cpu().numpy()
             kept[f'grids_{e}'] = np.array([g.shape for g in grids])
 

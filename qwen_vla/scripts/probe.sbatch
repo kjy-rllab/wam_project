@@ -11,7 +11,7 @@
 # KISTI hangang: every probe of a VLM on the RoboCasa probe scenes (behavior, attention, features and linear probes),
 # four shards at a time, one per GPU. Submit from the repository root on /scratch:
 #   $ sbatch qwen_vla/scripts/probe.sbatch <model dir> <output dir> [stage ...]
-# Stages (default: behavior attention features; also upsampled). A resubmission redoes the stages it is given.
+# Stages (default: behavior locate policy features; also upsampled). A resubmission redoes the stages it is given.
 # With SMOKE=<small model dir>, every stage but the linear probes first runs on 8 scenes with that model, and the job
 # stops if one fails.
 
@@ -25,7 +25,7 @@ export PYTHONPATH=$PWD HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false OMP_NUM_THR
 (lfs find "$WORK" -print0 | xargs -0 -n 2000 touch -a -c -h) > /dev/null 2>&1 &
 
 STAGES=${*:3}
-STAGES=${STAGES:-behavior attention features}
+STAGES=${STAGES:-behavior locate policy features}
 
 shards() {  # run "$@" as four shards, one per GPU; the first loads the model before the others start reading it
     CALL=$((CALL + 1))
@@ -49,9 +49,10 @@ run() {  # every stage for model $1 into $2
         upsampled)  # the 256 render shown at 384 and 512: more image tokens, no more detail
             shards qwen_vla.probe_behavior --model "$MODEL" --scenes "$SCENES" --output "$OUT" --size 384 &&
             shards qwen_vla.probe_behavior --model "$MODEL" --scenes "$SCENES" --output "$OUT" --size 512 || return 1 ;;
-        attention)
+        locate)
             shards qwen_vla.probe_attention --model "$MODEL" --scenes "$SCENES" --output "$OUT" --mode locate --size 768 &&
-            shards qwen_vla.probe_attention --model "$MODEL" --scenes "$SCENES" --output "$OUT" --mode locate --size 256 &&
+            shards qwen_vla.probe_attention --model "$MODEL" --scenes "$SCENES" --output "$OUT" --mode locate --size 256 || return 1 ;;
+        policy)
             shards qwen_vla.probe_attention --model "$MODEL" --scenes "$SCENES" --output "$OUT" --mode policy || return 1 ;;
         features)
             shards qwen_vla.probe_features --model "$MODEL" --scenes "$SCENES" --output "$OUT/features_policy" --layout policy &&

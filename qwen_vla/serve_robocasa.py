@@ -74,7 +74,7 @@ def main() -> None:
                 response = modality
             elif endpoint == 'get_action':
                 observation = data['observation']
-                images = [Image.fromarray(observation[f'video.{camera}'][0, -1]).resize((256, 256), Image.BILINEAR) for camera in CAMERAS]
+                images = [Image.fromarray(observation[f'video.{camera}'][0, -1]).resize((config['image_size'],) * 2, Image.BILINEAR) for camera in CAMERAS]
                 state = np.concatenate([observation[f'state.{name}'][0, -1] for name, _ in STATE]).astype(np.float32)
                 state = np.clip(2 * (state - state_range[0]) / np.maximum(state_range[1] - state_range[0], 1e-6) - 1, -5, 5)
                 padded = torch.zeros(1, config['state_dim'], device='cuda')
