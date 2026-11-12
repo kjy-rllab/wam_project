@@ -11,7 +11,7 @@
 # KISTI hangang: every probe of a VLM on the RoboCasa probe scenes (behavior, attention, features and linear probes),
 # four shards at a time, one per GPU. Submit from the repository root on /scratch:
 #   $ sbatch qwen_vla/scripts/probe.sbatch <model dir> <output dir> [stage ...]
-# Stages (default all): behavior attention features. A resubmission redoes the stages it is given.
+# Stages (default: behavior attention features; also upsampled). A resubmission redoes the stages it is given.
 # With SMOKE=<small model dir>, every stage but the linear probes first runs on 8 scenes with that model, and the job
 # stops if one fails.
 
@@ -46,6 +46,9 @@ run() {  # every stage for model $1 into $2
         behavior)
             shards qwen_vla.probe_behavior --model "$MODEL" --scenes "$SCENES" --output "$OUT" --size 768 &&
             shards qwen_vla.probe_behavior --model "$MODEL" --scenes "$SCENES" --output "$OUT" --size 256 || return 1 ;;
+        upsampled)  # the 256 render shown at 384 and 512: more image tokens, no more detail
+            shards qwen_vla.probe_behavior --model "$MODEL" --scenes "$SCENES" --output "$OUT" --size 384 &&
+            shards qwen_vla.probe_behavior --model "$MODEL" --scenes "$SCENES" --output "$OUT" --size 512 || return 1 ;;
         attention)
             shards qwen_vla.probe_attention --model "$MODEL" --scenes "$SCENES" --output "$OUT" --mode locate --size 768 &&
             shards qwen_vla.probe_attention --model "$MODEL" --scenes "$SCENES" --output "$OUT" --mode locate --size 256 &&
