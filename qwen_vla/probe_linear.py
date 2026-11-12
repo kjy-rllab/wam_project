@@ -3,8 +3,7 @@
 Ridge regression from the hidden state of an image token (standardized) to what is true at its image cell, 5 folds
 split by task so test kitchens and objects are from other tasks. Regression targets are scored by R^2 (log depth, xyz in
 the base frame, distance to the gripper), binary ones by AUROC (cell on an object, on the robot, on the gripper, on
-the task's object, on a fixture the task refers to; and, among cells on objects, task object against distractors).
-From the last prompt token: gripper position, and the task
+the task's object, on a fixture the task refers to). From the last prompt token: gripper position, and the task
 object's position relative to the gripper. Baselines: the cell's own pixels with its position (pixels), and the same
 probes on shuffled scenes (shuffled: labels of another scene's tokens, which keeps each label's statistics).
 
@@ -43,8 +42,6 @@ def main() -> None:
         'log_depth': np.log(cat('depth'))[:, None], 'xyz': cat('xyz'), 'reach': cat('reach')[:, None],
         'on_object': (kind == 2)[:, None], 'on_robot': (kind == 3)[:, None], 'on_gripper': cover[:, 2:3] > 0.2,
         'on_task_object': cover[:, 0:1] > 0.2, 'on_task_fixture': cover[:, 1:2] > 0.2,
-        # among cells on objects only: is it the task's object or a distractor? (needs the instruction)
-        'on_task_object_among_objects': np.where(kind == 2, cover[:, 0] > 0.2, np.nan)[:, None],
     }
     scene_targets = {'eef': np.stack([d['eef'] for d in data]), 'object_from_gripper': np.stack([d['object'] for d in data])}
     binary = {k for k in token_targets if k.startswith('on_')}

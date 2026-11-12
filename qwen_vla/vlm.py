@@ -31,8 +31,9 @@ def chat(processor: object, prompts: list[tuple[list, str]], text_first: bool = 
     """Batched inputs of user turns, each (images, text): left-padded, generation prompt added, thinking off."""
     messages = []
     for images, text in prompts:
-        content = [{'type': 'image', 'image': image} for image in images] + [{'type': 'text', 'text': text}]
-        messages.append([{'role': 'user', 'content': content[::-1] if text_first else content}])
+        content = [{'type': 'image', 'image': image} for image in images]
+        text = [{'type': 'text', 'text': text}]
+        messages.append([{'role': 'user', 'content': text + content if text_first else content + text}])
     processor.tokenizer.padding_side = 'left'
     return processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True, enable_thinking=False, return_dict=True,
