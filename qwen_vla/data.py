@@ -51,7 +51,7 @@ def index_dataset(job: tuple) -> dict | None:
     root, cameras, state_keys, action_keys = job
     info = json.loads((root / 'meta/info.json').read_text())
     keys = {c: next((k for k in info['features'] if k.endswith('.' + c) and info['features'][k]['dtype'] == 'video'), None) for c in cameras}
-    if None in keys.values():
+    if None in keys.values() or not any((root / 'meta').glob('episodes*')):  # a few uploads have no episode table
         return None
     stack = lambda table, names: np.concatenate([np.stack(table[n].to_numpy(zero_copy_only=False)).reshape(len(table), -1) for n in names], 1).astype(np.float32) \
         if names else np.zeros((len(table), 0), np.float32)
