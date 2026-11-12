@@ -24,6 +24,16 @@ export PYTHONPATH=$PWD HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false OMP_NUM_THR
 (lfs find "$WORK" -print0 | xargs -0 -n 2000 touch -a -c -h) > /dev/null 2>&1 &
 
 export MASTER=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
-srun --kill-on-bad-exit=1 bash -c 'torchrun --nnodes=$SLURM_NNODES --node_rank=$SLURM_NODEID --nproc_per_node=4 \
-    --master_addr=$MASTER --master_port=29511 -m qwen_vla.train --vlm "${VLM:-'"$WORK"'/checkpoints/Qwen3.8-27B}" \
-    --index '"$WORK"'/datasets/qwen_index --output '"$WORK"'/runs/qwen_vla/"$0" "$@"' "$@"
+# A GH200 node puts host memory on GPU memory when its CPU memory is full, so loading can run out of GPU memory:
+# start again when training stops within 15 minutes (3 tries, a new port each)
+for try in 1 2 3; do
+    start=$SECONDS
+    PORT=$((29510 + try)) srun --cpus-per-task=288 --kill-on-bad-exit=1 bash -c 'torchrun --nnodes=$SLURM_NNODES --node_rank=$SLURM_NODEID \
+        --nproc_per_node=4 --master_addr=$MASTER --master_port=$PORT -m qwen_vla.train --vlm "${VLM:-'"$WORK"'/checkpoints/Qwen3.8-27B}" \
+        --index '"$WORK"'/datasets/qwen_index --output '"$WORK"'/runs/qwen_vla/"$0" "$@"' "$@"
+    status=$?
+    if [ $status -eq 0 ] || [ $((SECONDS - start)) -ge 900 ]; then break; fi
+    echo "Training stopped $((SECONDS - start)) s after start (status $status), try $try of 3"
+    sleep 30
+done
+exit $status
