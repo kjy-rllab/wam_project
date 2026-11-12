@@ -34,6 +34,11 @@ EMBODIMENTS = {
                ['actions.joint_position_left', 'actions.joint_position_right'], 2),  # Cobot Magic, 30 Hz, joints
     'fr3_dual': ('real/BAAI-DataCube__*fr3_dual*', ['camera_front', 'camera_left', 'camera_right'],
                  ['observation.states.joint_position'], ['actions.joint_position'], 2),  # two Franka FR3, 30 Hz, joints
+    # Tien Kung humanoid, 30 Hz, both arms' joints: with one closure per hand (gello teleoperation: names end in
+    # gello_1rgb or tkg_1rgb) or with six finger joints per hand (xsens motion capture: xsens_1rgb or tkx_1rgb)
+    'tienkung_gello': ('real/BAAI-DataCube__*[go]_1rgb_*', ['camera_top'], ['observation.states.joint_position'], ['actions.joint_position'], 2),
+    'tienkung_xsens': ('real/BAAI-DataCube__*[sx]_1rgb_*', ['camera_top'], ['observation.states.joint_position', 'observation.states.end_effector'],
+                       ['actions.joint_position', 'actions.end_effector'], 2),
     'ur5_berkeley': ('real/lerobot__berkeley_autolab_ur5', ['image', 'hand_image'], ['observation.state'], ['action'], 1),  # 5 Hz, delta end effector
     'ur5_table30': ('real/Traly__RoboChallenge-lerobot/*', ['global_image', 'wrist_image'], ['observation.state'], ['action'], 3),  # 30 Hz, end-effector pose
     # RoboMIND UR5e: the recorded follower state is frozen in most episodes, so the state is left out
