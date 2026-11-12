@@ -98,8 +98,11 @@ def main() -> None:
     torch.cuda.empty_cache()
     if args.mode == 'full':
         # Float32 weights sharded over all GPUs. Each block and the rest of the VLM gather theirs in bf16 when first
-        # called and keep them until the backward pass; gradients are reduced in bf16 too
+        # called and keep them until the backward pass; gradients are reduced in bf16 too. Activations are recomputed
+        # block by block in the backward pass (kept, they take 3.8 GB per sample at tap 32). The backward kernel of
+        # the DeltaNet layers needs triton >= 3.7.1 on these GPUs.
         model.vlm.float()
+        model.vlm.gradient_checkpointing_enable()
         policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16)
         for module in list(model.vlm.visual.blocks) + list(model.vlm.language_model.layers) + [model.vlm]:
             fully_shard(module, mp_policy=policy, reshard_after_forward=False)
