@@ -66,7 +66,8 @@ def main() -> None:
 
     # Embodiments: sizes from the index, padded to the largest
     names = list(args.weights)
-    sizes = {n: tuple(np.load(args.index / f'{n}.npz')[k].shape[1] for k in ('state_range', 'action_range')) for n in names}
+    ranges = {n: {k: np.load(args.index / f'{n}.npz')[k].tolist() for k in ('state_range', 'action_range')} for n in names}
+    sizes = {n: (len(r['state_range'][0]), len(r['action_range'][0])) for n, r in ranges.items()}
     state_dim, action_dim = (max(s[i] for s in sizes.values()) for i in (0, 1))
     processor = vlm.AutoProcessor.from_pretrained(args.vlm)
 
@@ -146,7 +147,7 @@ def main() -> None:
                 state = {k: v.to('cpu', torch.bfloat16 if name == 'vlm' else v.dtype).contiguous() for k, v in full(module).items()}  # collective under FSDP
                 rank == 0 and save_file(state, folder / f'{name}.safetensors')
         rank == 0 and (folder / 'config.json').write_text(json.dumps({
-            'mode': args.mode, 'vlm': args.vlm, 'tap': args.tap, 'expert_layers': args.expert_layers, 'embodiments': names, 'state_dim': state_dim, 'action_dim': action_dim}))
+            'mode': args.mode, 'vlm': args.vlm, 'tap': args.tap, 'expert_layers': args.expert_layers, 'embodiments': names, 'state_dim': state_dim, 'action_dim': action_dim, 'ranges': ranges}))
 
     model.vlm.train(args.mode == 'full')
     model.expert.train()

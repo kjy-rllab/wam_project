@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--split", choices=("pretrain", "target"), default="pretrain")
     parser.add_argument("--max-steps", type=int, help="default: the task horizon of the RoboCasa dataset registry")
+    parser.add_argument("--replan-steps", type=int, default=24, help="actions run per request (DreamZero: whole chunks of 24)")
     parser.add_argument("--video", action="store_true", help="save each episode's three-camera MP4")
     parser.add_argument("--predicted-videos", type=int, default=0, metavar="N",
                         help="save the video the model predicted in episode 0 of the first N tasks")
@@ -88,7 +89,7 @@ def main():
                 continue
             out.mkdir(parents=True, exist_ok=True)
             command = [sys.executable, "-m", "server_inference.run_robocasa", "--server", address, "--task", task,
-                       "--split", args.split, "--seed", str(e), "--episodes", "1", "--replan-steps", "24",
+                       "--split", args.split, "--seed", str(e), "--episodes", "1", "--replan-steps", str(args.replan_steps),
                        "--max-steps", str(args.max_steps or get_task_horizon(task)), "--clip-actions",
                        "--output-dir", str(out)] + ["--video"] * (args.video or predicted)
             with open(out / "client.log", "w") as log:
