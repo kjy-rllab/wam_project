@@ -1,5 +1,6 @@
 """RoboCasa probe scenes (collect_scenes.py): the things in a camera image that a phrase names, with ground truth."""
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +45,13 @@ def targets(scene: dict, camera: int, min_area: float = 0.001) -> list[dict]:
                       'pos': scene['objects'].get(entity['name'], {}).get('pos')})
     phrases = [t['phrase'] for t in found]
     return [t for t in found if phrases.count(t['phrase']) == 1]
+
+
+def named_objects(scene: dict) -> list[int]:
+    """Entities that are objects whose category the instruction names (its phrase, or the category's first word)."""
+    words = lambda cat: {PHRASES.get(cat, cat.replace('_', ' ')), cat.replace('_', ' '), cat.split('_')[0]}
+    return [i for i, e in enumerate(scene['entities']) if e['kind'] == 'object'
+            and any(re.search(rf'\b{re.escape(w)}s?\b', scene['lang'].lower()) for w in words(e['cat']))]
 
 
 def cells(mask: np.ndarray, rows: int, cols: int) -> np.ndarray:

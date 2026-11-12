@@ -9,8 +9,8 @@ within each image (averaged over the images that show the mask, so a preference 
 whether the strongest cell of all images lies on it.
 
     locate masks: target (asked for), control (another thing in view, not asked for), gripper (not asked for)
-    policy masks: object (the objects the task places), distractor (the other objects), fixture (the fixtures the
-                  task refers to), gripper
+    policy masks: object (the objects the instruction names), distractor (the other objects), fixture (the fixtures
+                  the task refers to), gripper
 
 Also the share of each layer's write that comes from image tokens. Writes attention_<mode>_<size>_<shard>.npz with
 auroc and point [examples, masks, queries, layers, heads + 1] (last head index: all heads together), image_share
@@ -62,10 +62,10 @@ def main() -> None:
         frames = [Image.fromarray(f) for f in scene['rgb' if size == 768 else 'rgb_256']]
         if args.mode == 'policy':
             fixture = np.isin(scene['mask'], [names.index(n) for n in scene['fixture_refs'].values() if n in names])
-            objects = [i for i, e in enumerate(scene['entities']) if e['kind'] == 'object']
-            distractor = np.isin(scene['mask'], [i for i in objects if names[i].startswith('distr')])  # RoboCasa's name for them
+            objects = np.isin(scene['mask'], [i for i, e in enumerate(scene['entities']) if e['kind'] == 'object'])
+            named = np.isin(scene['mask'], scenes.named_objects(scene))
             examples.append({'scene': scene['path'], 'images': frames, 'text': scene['lang'], 'content': scene['lang'],
-                             'masks': [np.isin(scene['mask'], objects) & ~distractor, distractor, fixture, gripper]})
+                             'masks': [named, objects & ~named, fixture, gripper]})
             continue
         for camera in range(3):
             things = scenes.targets(scene, camera)
