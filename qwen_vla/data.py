@@ -22,6 +22,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
+av.logging.set_level(av.logging.PANIC)  # the decoder reports every such frame
 HORIZON = 16
 HOLDOUT = 50
 # glob under the data root, camera keys, state keys, action keys, frames between actions of a chunk
@@ -153,7 +154,10 @@ class Mixture(torch.utils.data.IterableDataset):
             first = self.index[name]['first']
             # uniform over frames: an episode in proportion to its length, then a frame
             episode = int(chosen[name][rng.choice(len(chosen[name]), p=share[name])])
-            yield self.sample(name, episode, int(rng.integers(first[episode + 1] - first[episode])))
+            try:
+                yield self.sample(name, episode, int(rng.integers(first[episode + 1] - first[episode])))
+            except av.error.FFmpegError:  # about 1% of the RoboMIND copies' frames do not decode after a seek
+                continue
 
 
 if __name__ == '__main__':
