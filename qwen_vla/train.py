@@ -10,6 +10,7 @@ step. The run writes log.jsonl
 trained.
 """
 import argparse
+import gc
 import json
 import math
 import os
@@ -93,6 +94,8 @@ def main() -> None:
     backbone, _ = vlm.load(args.vlm, device_map={'': device})
     model = VLA(backbone, args.tap, state_dim, action_dim, len(names), mode=args.mode, num_layers=args.expert_layers).to(device)
     del backbone.lm_head
+    gc.collect()  # the layers above the tap are in reference cycles
+    torch.cuda.empty_cache()
     if args.mode == 'full':
         # Float32 weights sharded over all GPUs. Each block and the rest of the VLM gather theirs in bf16 when first
         # called and keep them until the backward pass; gradients are reduced in bf16 too
@@ -157,6 +160,7 @@ def main() -> None:
     model.vlm.train(args.mode == 'full')
     model.expert.train()
     wait = busy = 0.0
+    torch.cuda.reset_peak_memory_stats(device)  # gpu_gb: the peak while training, not while loading
     for step in range(args.steps):
         start = time.time()
         batch = to_device(next(batches))
