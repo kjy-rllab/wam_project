@@ -36,7 +36,8 @@ def main() -> None:
     parser.add_argument('--model', required=True)
     parser.add_argument('--scenes', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--size', type=int, default=768, choices=(256, 768), help='image side given to the model')
+    parser.add_argument('--size', type=int, default=768, choices=(256, 384, 512, 768),
+                        help='image side given to the model; 384 and 512 are the 256 render upsampled')
     parser.add_argument('--batch', type=int, default=16)
     parser.add_argument('--pairs', type=int, default=2, help='pairs per relation and image, each asked in both orders')
     parser.add_argument('--limit', type=int, help='use only the first N scenes')
@@ -51,7 +52,7 @@ def main() -> None:
         scene = scenes.load(path)
         eef = np.array(scene['robot']['eef_pos'])
         for camera in range(3):
-            image = Image.fromarray(scene['rgb' if args.size == 768 else 'rgb_256'][camera])
+            image = Image.fromarray(scene['rgb' if args.size == 768 else 'rgb_256'][camera]).resize((args.size, args.size), Image.BICUBIC)
             things = scenes.targets(scene, camera)
             rng = np.random.default_rng([zlib.crc32(scene['path'].encode()), camera])  # same pairs for every model
             items = [{'kind': 'ground', 'a': t['phrase'], 'role': t['role'], 'text': GROUND.format(t['phrase'])}
