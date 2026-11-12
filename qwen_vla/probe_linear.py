@@ -30,7 +30,7 @@ def main() -> None:
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     paths = sorted(args.features.glob('*.npz'))
-    data = [np.load(p) for p in paths]
+    data = [dict(np.load(p)) for p in paths]  # read once: every layer below indexes the same arrays
     tasks = sorted({p.stem.rsplit('_', 1)[0] for p in paths})
     fold = lambda p: tasks.index(p.stem.rsplit('_', 1)[0]) % args.folds
     counts = [len(d['depth']) for d in data]
