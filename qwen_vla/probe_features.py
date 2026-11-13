@@ -27,6 +27,7 @@ KINDS = {'none': 0, 'other': 0, 'fixture': 1, 'object': 2, 'robot': 3}
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--model', required=True)
+    parser.add_argument('--weights', help='vlm.safetensors of a full-mode training checkpoint (the fine-tuned VLM)')
     parser.add_argument('--scenes', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--layout', choices=('policy', 'single'), default='policy')
@@ -38,7 +39,7 @@ def main() -> None:
     parser.add_argument('--shard', type=int, nargs=2, default=(0, 1), metavar=('I', 'N'))
     args = parser.parse_args()
 
-    model, processor = vlm.load(args.model)
+    model, processor = vlm.load(args.model, weights=args.weights)
     args.output.mkdir(parents=True, exist_ok=True)
     size = 256 if args.layout == 'policy' else args.size
     for path in tqdm(sorted(args.scenes.glob('*.npz'))[:args.limit][args.shard[0]::args.shard[1]]):

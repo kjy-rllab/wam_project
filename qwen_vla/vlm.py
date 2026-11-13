@@ -13,14 +13,20 @@ tokens, with the size of what each source token adds to the residual stream.
 """
 import torch
 import torch.nn.functional as F
+from safetensors.torch import load_file
 from torch import Tensor
 from transformers import AutoModelForImageTextToText, AutoProcessor
 from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb, causal_conv1d_fn, l2norm
 
 
-def load(path: str, device_map: str | dict = 'cuda', dtype: torch.dtype = torch.bfloat16) -> tuple:
+def load(path: str, device_map: str | dict = 'cuda', dtype: torch.dtype = torch.bfloat16, weights: str | None = None) -> tuple:
+    """weights: vlm.safetensors of a full-mode qwen_vla.train checkpoint, the fine-tuned VLM up to its tap (the layers
+    above the tap keep the released weights, so only the residual stream up to the tap is the fine-tuned model's)."""
     processor = AutoProcessor.from_pretrained(path)
     model = AutoModelForImageTextToText.from_pretrained(path, dtype=dtype, device_map=device_map).eval()
+    if weights:
+        missing, unexpected = model.model.load_state_dict(load_file(weights), strict=False)
+        assert not unexpected and all('language_model.layers.' in k or 'language_model.norm.' in k for k in missing), (missing[:3], unexpected[:3])
     # The patch embedding is a Conv3d whose kernel is the whole patch; in bf16 it can run 100x slower than this matmul
     proj = model.model.visual.patch_embed.proj
     model.model.visual.patch_embed.forward = lambda x: F.linear(x.to(proj.weight.dtype), proj.weight.flatten(1), proj.bias)

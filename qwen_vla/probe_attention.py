@@ -38,6 +38,7 @@ MASKS = {'locate': ['target', 'control', 'gripper'], 'policy': ['object', 'distr
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--model', required=True)
+    parser.add_argument('--weights', help='vlm.safetensors of a full-mode training checkpoint (the fine-tuned VLM)')
     parser.add_argument('--scenes', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--mode', choices=('locate', 'policy'), default='locate')
@@ -48,7 +49,7 @@ def main() -> None:
     parser.add_argument('--shard', type=int, nargs=2, default=(0, 1), metavar=('I', 'N'))
     args = parser.parse_args()
 
-    model, processor = vlm.load(args.model)
+    model, processor = vlm.load(args.model, weights=args.weights)
     device, tokenizer = model.device, processor.tokenizer
     layers = model.model.language_model.layers
     heads = max(model.config.text_config.linear_num_value_heads, model.config.text_config.num_attention_heads)
