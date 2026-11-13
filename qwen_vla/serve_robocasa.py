@@ -39,13 +39,12 @@ def decode(d):
     return np.load(io.BytesIO(d['as_npy']), allow_pickle=False) if '__ndarray_class__' in d else d
 
 
-def as_video_frame(image: Image.Image) -> Image.Image:
-    """The image after H.264 encoding with the settings of the RoboCasa training videos (libx264, yuv420p, crf 23).
-    The trained models read the codec's texture: on the simulator's clean renders they predict arm motions about half
-    as large (crf 18-23 restores them; crf 30 is too strong, a colour round trip alone changes nothing)."""
+def as_video_frame(image: Image.Image, crf: int) -> Image.Image:
+    """The image after H.264 encoding (libx264, yuv420p; the RoboCasa training videos use crf 23). A sensitivity
+    test: the trained models are brittle to it (success over 100 episodes with crf none / 23 / 30: frozen 15 / 3 / 0)."""
     buffer = io.BytesIO()
     with av.open(buffer, 'w', format='mp4') as container:
-        stream = container.add_stream('libx264', rate=20, options={'crf': '23'})
+        stream = container.add_stream('libx264', rate=20, options={'crf': str(crf)})
         stream.width, stream.height, stream.pix_fmt = image.width, image.height, 'yuv420p'
         container.mux(stream.encode(av.VideoFrame.from_image(image)))
         container.mux(stream.encode())
@@ -58,6 +57,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--checkpoint', type=Path, required=True)
     parser.add_argument('--port', type=int, default=5555)
+    parser.add_argument('--crf', type=int, help='pass every frame through H.264 at this quality (default: frames as sent)')
     args = parser.parse_args()
 
     config = json.loads((args.checkpoint / 'config.json').read_text())
@@ -90,7 +90,8 @@ def main() -> None:
                 response = modality
             elif endpoint == 'get_action':
                 observation = data['observation']
-                images = [as_video_frame(Image.fromarray(observation[f'video.{camera}'][0, -1])).resize((config['image_size'],) * 2, Image.BILINEAR) for camera in CAMERAS]
+                images = [Image.fromarray(observation[f'video.{camera}'][0, -1]) for camera in CAMERAS]
+                images = [(image if args.crf is None else as_video_frame(image, args.crf)).resize((config['image_size'],) * 2, Image.BILINEAR) for image in images]
                 state = np.concatenate([observation[f'state.{name}'][0, -1] for name, _ in STATE]).astype(np.float32)
                 state = np.clip(2 * (state - state_range[0]) / np.maximum(state_range[1] - state_range[0], 1e-6) - 1, -5, 5)
                 padded = torch.zeros(1, config['state_dim'], device='cuda')
