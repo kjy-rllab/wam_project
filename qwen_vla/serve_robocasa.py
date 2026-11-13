@@ -12,6 +12,7 @@ import json
 import traceback
 from pathlib import Path
 
+import av
 import msgpack
 import numpy as np
 import torch
@@ -36,6 +37,20 @@ def encode(x):
 
 def decode(d):
     return np.load(io.BytesIO(d['as_npy']), allow_pickle=False) if '__ndarray_class__' in d else d
+
+
+def as_video_frame(image: Image.Image) -> Image.Image:
+    """The image after H.264 encoding as in the LeRobot videos the model was trained on (yuv420p, crf 30). On the
+    simulator's clean renders the trained models predict much smaller actions than on video frames."""
+    buffer = io.BytesIO()
+    with av.open(buffer, 'w', format='mp4') as container:
+        stream = container.add_stream('libx264', rate=20, options={'crf': '30'})
+        stream.width, stream.height, stream.pix_fmt = image.width, image.height, 'yuv420p'
+        container.mux(stream.encode(av.VideoFrame.from_image(image)))
+        container.mux(stream.encode())
+    buffer.seek(0)
+    with av.open(buffer) as container:
+        return next(container.decode(video=0)).to_image()
 
 
 def main() -> None:
@@ -74,7 +89,7 @@ def main() -> None:
                 response = modality
             elif endpoint == 'get_action':
                 observation = data['observation']
-                images = [Image.fromarray(observation[f'video.{camera}'][0, -1]).resize((config['image_size'],) * 2, Image.BILINEAR) for camera in CAMERAS]
+                images = [as_video_frame(Image.fromarray(observation[f'video.{camera}'][0, -1])).resize((config['image_size'],) * 2, Image.BILINEAR) for camera in CAMERAS]
                 state = np.concatenate([observation[f'state.{name}'][0, -1] for name, _ in STATE]).astype(np.float32)
                 state = np.clip(2 * (state - state_range[0]) / np.maximum(state_range[1] - state_range[0], 1e-6) - 1, -5, 5)
                 padded = torch.zeros(1, config['state_dim'], device='cuda')
