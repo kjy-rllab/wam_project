@@ -21,6 +21,15 @@ plt.rcParams.update({'figure.facecolor': SURFACE, 'axes.facecolor': SURFACE, 'sa
                      'axes.spines.top': False, 'axes.spines.right': False, 'axes.edgecolor': MUTED, 'axes.labelcolor': INK,
                      'xtick.color': MUTED, 'ytick.color': MUTED, 'grid.color': '#e4e3df', 'axes.grid': True, 'grid.linewidth': 0.6,
                      'lines.linewidth': 1.6, 'legend.frameon': False, 'figure.dpi': 140})
+# Names in the figures. Query positions: the token whose incoming contributions are scored
+QUERIES = {'locate': ['referring expression, last token', 'final input token', 'x1 prediction position'],
+           'policy': ['instruction, last token', 'final input token']}
+MASKS = {'target': 'queried entity', 'control': 'non-queried entity', 'object': 'instructed object', 'distractor': 'other objects',
+         'fixture': 'task fixture', 'gripper': 'gripper'}
+TARGETS = {'log_depth': 'log depth (R²)', 'xyz': '3D position, base frame (R²)', 'reach': 'distance to end-effector (R²)',
+           'on_object': 'object patch (AUROC)', 'on_robot': 'robot patch (AUROC)', 'on_gripper': 'gripper patch (AUROC)',
+           'on_task_object': 'task-object patch (AUROC)', 'on_task_fixture': 'task-fixture patch (AUROC)'}
+LAYOUTS = {'policy': '3 views x 256 px, image-first', 'policy_text_first': '3 views x 256 px, text-first', 'single_768': '1 view x 768 px'}
 
 
 def wilson(k: float, n: int) -> tuple[float, float]:
@@ -42,7 +51,7 @@ def main() -> None:
         rows = {s: [json.loads(line) for p in sorted(source.glob(f'behavior_{s}_*.jsonl')) for line in open(p)] for s in sizes}
         groups = [('object', 'ground', 'role'), ('appliance', 'ground', 'role'), ('gripper', 'ground', 'role'),
                   ('left', 'left', 'kind'), ('camera', 'camera', 'kind'), ('gripper', 'gripper', 'kind')]
-        labels = ['locate\nobject', 'locate\nappliance', 'locate\ngripper', 'further\nleft', 'closer to\ncamera', 'closer to\ngripper']
+        labels = ['grounding\nobject', 'grounding\nappliance', 'grounding\ngripper', 'relation\nleft-right', 'relation\ndepth order', 'relation\ngripper distance']
         fig, ax = plt.subplots(figsize=(7.2, 3.0), layout='constrained')
         summary['behavior'] = {}
         for i, size in enumerate(sizes):
@@ -57,21 +66,22 @@ def main() -> None:
                     **({'mean_iou': float(np.mean([r['iou'] for r in part])), 'centre_on_target': float(np.mean([r['hit'] for r in part]))} if kind == 'ground' and part else {})}
             x = np.arange(len(groups)) + (i - (len(sizes) - 1) / 2) * 0.8 / len(sizes)
             ax.bar(x, values, 0.8 / len(sizes) - 0.03, yerr=[low, high], color=COLORS[i], error_kw={'lw': 0.8, 'ecolor': INK},
-                   label=f'{size} px' + (' (256 px render)' if size in (384, 512) else ''))
+                   label=f'{size} px' + (' (256 px upsampled)' if size in (384, 512) else ''))
         ax.axhline(0.5, color=MUTED, lw=0.8, ls=':')
-        ax.text(5.45, 0.51, 'chance (relations)', color=MUTED, fontsize=7, ha='right')
+        ax.text(2.42, 0.515, 'chance level', color=MUTED, fontsize=7, ha='right')
         ax.set_xticks(np.arange(len(groups)), labels)
-        ax.set_ylim(0, 1.12); ax.set_ylabel('IoU ≥ 0.5 (locate) / correct (relations)'); ax.legend(ncol=len(sizes), loc='upper right', fontsize=7)
+        ax.set_ylim(0, 1.12); ax.set_ylabel('Acc@IoU≥0.5 / accuracy'); ax.legend(ncol=len(sizes), loc='upper right', fontsize=7)
         fig.savefig(out / 'figures/behavior.png'); plt.close(fig)
 
-    # Attention: how well each layer's read of the image tokens singles out a mask
+    # Attention: how well each layer's contribution map over the image tokens localizes a mask. Layers are numbered from 1
+    depth = None
     for path in sorted(source.glob('attention_*_0.npz')):
         tag = path.stem.rsplit('_', 1)[0]  # attention_<mode>_<size>
         parts = [np.load(p, allow_pickle=True) for p in sorted(source.glob(f'{tag}_*.npz'))]
         auroc, point, share = (np.concatenate([p[k] for p in parts]) for k in ('auroc', 'point', 'image_share'))
         masks, types = [str(m) for m in parts[0]['masks']], np.array([str(t) for t in parts[0]['types']])
         layers, full = np.arange(len(types)), types == 'full_attention'
-        queries = ['phrase token', 'last prompt token', 'box token'] if 'locate' in tag else ['instruction end', 'last prompt token']
+        queries, depth = QUERIES['locate' if 'locate' in tag else 'policy'], len(types)
         mean = np.nanmean(auroc, 0)  # [masks, queries, layers, heads + 1]
         summary[tag] = {'examples': int(len(auroc)), 'with_mask': np.isfinite(auroc[:, :, 0, 0, -1]).sum(0).tolist(), 'masks': masks, 'queries': queries,
                         'auroc_all_heads': {m: {q: mean[i, j, :, -1].tolist() for j, q in enumerate(queries)} for i, m in enumerate(masks)},
@@ -81,27 +91,28 @@ def main() -> None:
         fig, axes = plt.subplots(2, len(queries), figsize=(3.6 * len(queries), 4.6), layout='constrained', sharex=True, sharey='row', squeeze=False)
         for j, query in enumerate(queries):
             for i, (mask, color) in enumerate(zip(masks, COLORS)):
-                axes[0, j].plot(layers, mean[i, j, :, -1], color=color, lw=1.0, label=mask)
-                axes[0, j].scatter(layers[full], mean[i, j, full, -1], color=color, s=14, zorder=3)
-            axes[0, j].plot(layers, np.nanmax(mean[0, j, :, :-1], -1), color=BLUE, lw=0.8, ls='--', label=f'{masks[0]}, best head')
+                axes[0, j].plot(layers + 1, mean[i, j, :, -1], color=color, lw=1.0, label=MASKS[mask])
+                axes[0, j].scatter(layers[full] + 1, mean[i, j, full, -1], color=color, s=14, zorder=3)
+            axes[0, j].plot(layers + 1, np.nanmax(mean[0, j, :, :-1], -1), color=BLUE, lw=0.8, ls='--', label=f'{MASKS[masks[0]]}, best single head')
             axes[0, j].axhline(0.5, color=MUTED, lw=0.8, ls=':')
-            axes[0, j].set_title(f'read from the {query}', fontsize=9)
-            axes[1, j].plot(layers, np.nanmean(share[:, j], 0), color=INK, lw=1.0)
-            axes[1, j].scatter(layers[full], np.nanmean(share[:, j], 0)[full], color=INK, s=14, zorder=3)
-        axes[0, 0].set_ylabel('AUROC of mask cells'); axes[1, 0].set_ylabel('share of the write from image tokens')
-        axes[0, 0].legend(fontsize=7)
-        fig.supxlabel('layer (dots: softmax attention layers; the others are Gated DeltaNet layers)', fontsize=9, color=INK)
+            axes[0, j].set_title(f'query position: {query}', fontsize=9)
+            axes[1, j].plot(layers + 1, np.nanmean(share[:, j], 0), color=INK, lw=1.0)
+            axes[1, j].scatter(layers[full] + 1, np.nanmean(share[:, j], 0)[full], color=INK, s=14, zorder=3)
+        axes[0, 0].set_ylabel('localization AUROC'); axes[1, 0].set_ylabel('image-token share')
+        fig.legend(*axes[0, 0].get_legend_handles_labels(), loc='outside upper center', ncol=5, fontsize=7)
+        fig.supxlabel('layer (markers: softmax attention layers; the others are Gated DeltaNet layers)', fontsize=9, color=INK)
         fig.savefig(out / f'figures/{tag}_layers.png'); plt.close(fig)
 
-        # Heads: AUROC of the first mask per layer and head, for the query that reads the image most
+        # Heads: AUROC of the first mask per layer and head, for the query position where it is highest
         q = int(np.argmax([np.nanmax(mean[0, j, :, -1]) for j in range(len(queries))]))
         fig, ax = plt.subplots(figsize=(7.2, 3.2), layout='constrained')
-        image = ax.imshow(mean[0, q, :, :-1].T, aspect='auto', cmap='Blues', vmin=0.5, vmax=1.0, interpolation='nearest')
-        ax.grid(False); ax.set_xlabel('layer'); ax.set_ylabel('head'); ax.set_title(f'AUROC of the {masks[0]} per head, read from the {queries[q]}', fontsize=9)
+        image = ax.imshow(mean[0, q, :, :-1].T, aspect='auto', cmap='Blues', vmin=0.5, vmax=1.0, interpolation='nearest',
+                          extent=(0.5, len(types) + 0.5, mean.shape[-1] - 1.5, -0.5))
+        ax.grid(False); ax.set_xlabel('layer'); ax.set_ylabel('head'); ax.set_title(f'localization AUROC of the {MASKS[masks[0]]} per head; query position: {queries[q]}', fontsize=9)
         fig.colorbar(image, ax=ax, pad=0.01)
         fig.savefig(out / f'figures/{tag}_heads.png'); plt.close(fig)
 
-        # Examples: what the query token reads from the image, layer by layer (first mask outlined)
+        # Examples: the contribution map at the query position, layer by layer (first mask outlined)
         meta = json.loads(str(parts[0]['meta']))
         shown = [e for e in range(len(meta)) if f'maps_{e}' in parts[0] and parts[0][f'cover_{e}'][0].max() >= 0.2][:4]
         picked = np.concatenate([layers[full][np.linspace(0, full.sum() - 1, 6).round().astype(int)], layers[full][[full.sum() // 2]] - 1])
@@ -121,28 +132,28 @@ def main() -> None:
                 heat = tile(maps[layer] / maps[layer].max())
                 ax.imshow(255 - (255 - picture.mean(-1)) * 0.35, cmap='gray', vmin=0, vmax=255)
                 ax.imshow(np.dstack([np.full(heat.shape + (3,), matplotlib.colors.to_rgb(BLUE)), heat**0.7]), extent=extent, interpolation='nearest')
-                ax.set_title(f'layer {layer}' + ('' if full[layer] else ' (DeltaNet)'), fontsize=7)
+                ax.set_title(f'layer {layer + 1}' + ('' if full[layer] else ' (DeltaNet)'), fontsize=7)
             for ax in row:
                 ax.contour(np.kron(tile(cover), np.ones((8, 8))), [0.2], colors=ORANGE, linewidths=0.8, extent=extent, origin='upper')
                 ax.set_xticks([]); ax.set_yticks([]); ax.grid(False)
-        fig.suptitle(f'what the {queries[q]} reads from the image; outline: the {masks[0]}', fontsize=8)
+        fig.suptitle(f'contribution map of the image tokens at the query position ({queries[q]}); outline: {MASKS[masks[0]]} mask', fontsize=8)
         fig.savefig(out / f'figures/{tag}_examples.png'); plt.close(fig)
 
     # Linear probes: one panel per target, lines per dump
     dumps = {p.stem.removeprefix('probe_'): json.loads(p.read_text()) for p in sorted(source.glob('probe_*.json'))}
     if dumps:
         summary['probes'] = dumps
-        targets = ['log_depth', 'xyz', 'reach', 'on_object', 'on_robot', 'on_gripper', 'on_task_object', 'on_task_fixture']
         fig, axes = plt.subplots(2, 4, figsize=(10.4, 4.8), layout='constrained')
-        for ax, target in zip(axes.flat, targets):
+        for ax, (target, title) in zip(axes.flat, TARGETS.items()):
             for (name, dump), color in zip(dumps.items(), (BLUE, ORANGE, AQUA)):
-                x = np.linspace(0, 1, dump['layers'])
-                ax.plot(x, [r[target] for r in dump['token']], color=color, label=name)
+                x = np.linspace(0, depth or 1, dump['layers'])  # hidden states from the embeddings to the last layer
+                ax.plot(x, [r[target] for r in dump['token']], color=color, label=LAYOUTS.get(name, name))
                 ax.axhline(dump['pixels'][target], color=color, lw=0.8, ls=':')
-            ax.set_title(target.replace('_', ' '), fontsize=8)
+            ax.set_title(title, fontsize=8)
             ax.set_ylim(0.4 if target.startswith('on_') else -0.05, 1.0)
-        fig.supxlabel('depth (0: vision encoder output, 1: last layer); dotted: the cell\'s own pixels and position', fontsize=9, color=INK)
-        fig.supylabel('R² (log depth, xyz, reach) / AUROC (on …)', fontsize=9, color=INK); axes[0, 0].legend(fontsize=7)
+        fig.supxlabel(('layer (0: vision encoder output)' if depth else 'relative depth (0: vision encoder output, 1: last layer)')
+                      + '; dotted: ridge baseline on the patch\'s pixels and position', fontsize=9, color=INK)
+        fig.supylabel('cross-validated score of the linear probe', fontsize=9, color=INK); axes[0, 0].legend(fontsize=7)
         fig.savefig(out / 'figures/probes.png'); plt.close(fig)
 
     (out / 'summary.json').write_text(json.dumps(summary, indent=1))
